@@ -13,6 +13,7 @@ bcachefs-y		:=	\
 	btree_io.o		\
 	btree_iter.o		\
 	btree_key_cache.o	\
+	btree_repair_missing_root.o	\
 	btree_update_interior.o	\
 	btree_update_leaf.o	\
 	buckets.o		\

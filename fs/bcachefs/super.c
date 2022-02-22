@@ -14,6 +14,7 @@
 #include "btree_cache.h"
 #include "btree_gc.h"
 #include "btree_key_cache.h"
+#include "btree_repair_missing_root.h"
 #include "btree_update_interior.h"
 #include "btree_io.h"
 #include "buckets_waiting_for_journal.h"
@@ -433,6 +434,7 @@ static void __bch2_fs_free(struct bch_fs *c)
 	for (i = 0; i < BCH_TIME_STAT_NR; i++)
 		bch2_time_stats_exit(&c->times[i]);
 
+	bch2_find_btree_nodes_exit(&c->found_btree_nodes);
 	bch2_fs_snapshots_exit(c);
 	bch2_fs_quota_exit(c);
 	bch2_fs_fsio_exit(c);
