@@ -11,10 +11,11 @@
 #include "journal_io.h"
 #include "recovery.h"
 
+#include <linux/kthread.h>
 #include <linux/sort.h>
 
 struct find_btree_nodes_worker {
-	struct closure		cl;
+	struct closure		*cl;
 	struct find_btree_nodes	*f;
 	struct bch_dev		*ca;
 	u64			bucket_start;
@@ -123,10 +124,9 @@ out:
 	mutex_unlock(&f->lock);
 }
 
-static void read_btree_nodes_worker(struct closure *cl)
+static int read_btree_nodes_worker(void *p)
 {
-	struct find_btree_nodes_worker *w =
-		container_of(cl, struct find_btree_nodes_worker, cl);
+	struct find_btree_nodes_worker *w = p;
 	struct bch_fs *c = container_of(w->f, struct bch_fs, found_btree_nodes);
 	struct bch_dev *ca = w->ca;
 	void *buf = (void *) __get_free_page(GFP_KERNEL);
@@ -150,8 +150,9 @@ err:
 	bio_put(bio);
 	free_page((unsigned long) buf);
 	percpu_ref_get(&ca->io_ref);
-	closure_return(cl);
+	closure_put(w->cl);
 	kfree(w);
+	return 0;
 }
 
 static int read_btree_nodes(struct find_btree_nodes *f)
@@ -160,33 +161,36 @@ static int read_btree_nodes(struct find_btree_nodes *f)
 	struct bch_dev *ca;
 	struct closure cl;
 	unsigned i;
-	u64 bucket;
 	int ret = 0;
 
 	closure_init_stack(&cl);
 
 	for_each_online_member(ca, c, i) {
-		/* 1 GB: */
-		unsigned buckets_per_worker = (1U << 21) / ca->mi.bucket_size;
+		struct find_btree_nodes_worker *w = kmalloc(sizeof(*w), GFP_KERNEL);
+		struct task_struct *t;
 
-		for (bucket = ca->mi.first_bucket;
-		     bucket < ca->mi.nbuckets;
-		     bucket += buckets_per_worker) {
-			struct find_btree_nodes_worker *w = kmalloc(sizeof(*w), GFP_KERNEL);
+		if (!w) {
+			percpu_ref_put(&ca->io_ref);
+			ret = -ENOMEM;
+			goto err;
+		}
 
-			if (!w) {
-				percpu_ref_put(&ca->io_ref);
-				ret = -ENOMEM;
-				goto err;
-			}
+		percpu_ref_get(&ca->io_ref);
+		closure_get(&cl);
+		w->cl		= &cl;
+		w->f		= f;
+		w->ca		= ca;
 
-			percpu_ref_get(&ca->io_ref);
-			w->f		= f;
-			w->ca		= ca;
-
-			w->bucket_start	= bucket;
-			w->bucket_end	= min(bucket + buckets_per_worker, ca->mi.nbuckets);
-			closure_call(&w->cl, read_btree_nodes_worker, system_unbound_wq, &cl);
+		w->bucket_start	= ca->mi.first_bucket;
+		w->bucket_end	= ca->mi.nbuckets;
+		t = kthread_run(read_btree_nodes_worker, w, "read_btree_nodes/%s", ca->name);
+		ret = IS_ERR_OR_NULL(t);
+		if (ret) {
+			percpu_ref_put(&ca->io_ref);
+			closure_put(&cl);
+			f->ret = ret;
+			bch_err(c, "error starting kthread: %i", ret);
+			break;
 		}
 	}
 err:
