@@ -35,6 +35,20 @@ static void found_btree_node_to_text(struct printbuf *out, const struct found_bt
 		pr_buf(out, " overwritten");
 }
 
+static void found_btree_node_to_key(struct bkey_i *k, const struct found_btree_node *f)
+{
+	struct bkey_i_btree_ptr_v2 *bp = bkey_btree_ptr_v2_init(k);
+
+	set_bkey_val_u64s(&bp->k, sizeof(struct bch_btree_ptr_v2) / sizeof(u64) + f->nr_ptrs);
+	bp->k.p			= f->max_key;
+	bp->v.seq		= cpu_to_le64(f->cookie);
+	bp->v.sectors_written	= 0;
+	bp->v.flags		= 0;
+	bp->v.min_key		= f->min_key;
+	SET_BTREE_PTR_RANGE_UPDATED(&bp->v, f->range_updated);
+	memcpy(bp->v.start, f->ptrs, sizeof(struct bch_extent_ptr) * f->nr_ptrs);
+}
+
 static int found_btree_node_cmp_cookie(const void *_l, const void *_r)
 {
 	const struct found_btree_node *l = _l;
@@ -54,6 +68,42 @@ static int found_btree_node_cmp_pos(const void *_l, const void *_r)
 	       -cmp_int(l->level,	r->level) ?:
 		bpos_cmp(l->min_key,	r->min_key) ?:
 	       -cmp_int(l->seq,		r->seq);
+}
+
+/*
+ * Given two found btree nodes, if their sequence numbers are equal, take the
+ * one that's readable:
+ */
+static int found_btree_node_cmp_time(struct bch_fs *c,
+				     const struct found_btree_node *l,
+				     const struct found_btree_node *r)
+{
+	__BKEY_PADDED(k, BKEY_BTREE_PTR_VAL_U64s_MAX) k_l;
+	__BKEY_PADDED(k, BKEY_BTREE_PTR_VAL_U64s_MAX) k_r;
+	struct btree *b_l, *b_r;
+	int ret;
+
+	if (l->seq != r->seq)
+		return cmp_int(l->seq, r->seq);
+
+	found_btree_node_to_key(&k_l.k, l);
+	found_btree_node_to_key(&k_r.k, l);
+
+	b_l = bch2_btree_node_get_noiter(c, &k_l.k, l->btree_id, l->level, false);
+
+	b_r = bch2_btree_node_get_noiter(c, &k_r.k, l->btree_id, l->level, false);
+
+	if (!IS_ERR_OR_NULL(b_l))
+		ret = 1;
+	else
+		ret = -1;
+
+	if (!IS_ERR_OR_NULL(b_l))
+		six_unlock_read(&b_l->c.lock);
+	if (!IS_ERR_OR_NULL(b_r))
+		six_unlock_read(&b_r->c.lock);
+
+	return ret;
 }
 
 static void try_read_btree_node(struct find_btree_nodes *f, struct bch_dev *ca,
@@ -219,7 +269,9 @@ again:
 	     n->level		== start->level &&
 	     bpos_cmp(start->max_key, n->min_key) > 0;
 	     n++)  {
-		if (start->seq > n->seq) {
+		int cmp = found_btree_node_cmp_time(c, start, n);
+
+		if (cmp > 0) {
 			n->range_updated = true;
 
 			if (bpos_cmp(start->max_key, n->max_key) >= 0)
@@ -229,7 +281,7 @@ again:
 				bubble_up(n, end);
 				goto again;
 			}
-		} else if (start->seq < n->seq) {
+		} else if (cmp < 0) {
 			BUG_ON(bpos_cmp(n->min_key, start->min_key) <= 0);
 
 			start->range_updated = true;
@@ -361,22 +413,11 @@ int bch2_repair_missing_btree_root(struct bch_fs *c, enum btree_id btree_id)
 	     i->btree_id	== start->btree_id &&
 	     i->level		== start->level;
 	     i++) {
-		struct bkey_i_btree_ptr_v2 *bp;
-
 		__BKEY_PADDED(k, BKEY_BTREE_PTR_VAL_U64s_MAX) tmp;
 
-		bp = bkey_btree_ptr_v2_init(&tmp.k);
-		set_bkey_val_u64s(&bp->k,
-			sizeof(struct bch_btree_ptr_v2) / sizeof(u64) + i->nr_ptrs);
-		bp->k.p			= i->max_key;
-		bp->v.seq		= cpu_to_le64(i->cookie);
-		bp->v.sectors_written	= 0;
-		bp->v.flags		= 0;
-		bp->v.min_key		= i->min_key;
-		SET_BTREE_PTR_RANGE_UPDATED(&bp->v, i->range_updated);
-		memcpy(bp->v.start, i->ptrs, sizeof(struct bch_extent_ptr) * i->nr_ptrs);
+		found_btree_node_to_key(&tmp.k, i);
 
-		ret = bch2_journal_key_insert(c, btree_id, new_root_level, &bp->k_i);
+		ret = bch2_journal_key_insert(c, btree_id, new_root_level, &tmp.k);
 		if (ret)
 			return ret;
 	}
