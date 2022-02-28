@@ -565,10 +565,11 @@ struct find_btree_nodes {
 	struct mutex			lock;
 	size_t				nr, size;
 	struct found_btree_node {
-		bool			range_updated;
-		bool			overwritten;
+		bool			range_updated:1;
+		bool			overwritten:1;
 		u8			btree_id;
 		u8			level;
+		u8			version;
 		u32			seq;
 		u64			cookie;
 

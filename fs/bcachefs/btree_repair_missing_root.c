@@ -59,17 +59,6 @@ static int found_btree_node_cmp_cookie(const void *_l, const void *_r)
 		cmp_int(l->cookie,	r->cookie);
 }
 
-static int found_btree_node_cmp_pos(const void *_l, const void *_r)
-{
-	const struct found_btree_node *l = _l;
-	const struct found_btree_node *r = _r;
-
-	return  cmp_int(l->btree_id,	r->btree_id) ?:
-	       -cmp_int(l->level,	r->level) ?:
-		bpos_cmp(l->min_key,	r->min_key) ?:
-	       -cmp_int(l->seq,		r->seq);
-}
-
 /*
  * Given two found btree nodes, if their sequence numbers are equal, take the
  * one that's readable:
@@ -81,10 +70,11 @@ static int found_btree_node_cmp_time(struct bch_fs *c,
 	__BKEY_PADDED(k, BKEY_BTREE_PTR_VAL_U64s_MAX) k_l;
 	__BKEY_PADDED(k, BKEY_BTREE_PTR_VAL_U64s_MAX) k_r;
 	struct btree *b_l, *b_r;
-	int ret;
+	int ret, cmp = cmp_int(l->version, r->version) ?:
+		cmp_int(l->seq, r->seq);
 
-	if (l->seq != r->seq)
-		return cmp_int(l->seq, r->seq);
+	if (cmp)
+		return cmp;
 
 	found_btree_node_to_key(&k_l.k, l);
 	found_btree_node_to_key(&k_r.k, l);
@@ -104,6 +94,18 @@ static int found_btree_node_cmp_time(struct bch_fs *c,
 		six_unlock_read(&b_r->c.lock);
 
 	return ret;
+}
+
+static int found_btree_node_cmp_pos(const void *_l, const void *_r, const void *priv)
+{
+	struct bch_fs *c = (void *) priv;
+	const struct found_btree_node *l = _l;
+	const struct found_btree_node *r = _r;
+
+	return  cmp_int(l->btree_id,	r->btree_id) ?:
+	       -cmp_int(l->level,	r->level) ?:
+		bpos_cmp(l->min_key,	r->min_key) ?:
+	       -found_btree_node_cmp_time(c, l, r);
 }
 
 static void try_read_btree_node(struct find_btree_nodes *f, struct bch_dev *ca,
@@ -156,6 +158,7 @@ static void try_read_btree_node(struct find_btree_nodes *f, struct bch_dev *ca,
 	f->d[f->nr++] = (struct found_btree_node) {
 		.btree_id	= BTREE_NODE_ID(bn),
 		.level		= BTREE_NODE_LEVEL(bn),
+		.version	= le16_to_cpu(bn->keys.version),
 		.seq		= BTREE_NODE_SEQ(bn),
 		.cookie		= le64_to_cpu(bn->keys.seq),
 		.min_key	= bn->min_key,
@@ -248,10 +251,11 @@ err:
 	return f->ret ?: ret;
 }
 
-static void bubble_up(struct found_btree_node *n, struct found_btree_node *end)
+static void bubble_up(struct bch_fs *c,
+		      struct found_btree_node *n, struct found_btree_node *end)
 {
 	while (n + 1 < end &&
-	       found_btree_node_cmp_pos(n, n + 1) > 0) {
+	       found_btree_node_cmp_pos(n, n + 1,c ) > 0) {
 		swap(n[0], n[1]);
 		n++;
 	}
@@ -278,14 +282,15 @@ again:
 				n->overwritten = true;
 			else {
 				n->min_key = bpos_successor(start->max_key);
-				bubble_up(n, end);
+				n->range_updated = true;
+				bubble_up(c, n, end);
 				goto again;
 			}
 		} else if (cmp < 0) {
 			BUG_ON(bpos_cmp(n->min_key, start->min_key) <= 0);
 
-			start->range_updated = true;
 			start->max_key = bpos_predecessor(n->min_key);
+			start->range_updated = true;
 		} else {
 			char buf[200];
 
@@ -350,7 +355,7 @@ static int bch2_scan_devices_for_btree_nodes(struct bch_fs *c)
 	swap(f->d, d);
 	f->nr = dst;
 
-	sort(f->d, f->nr, sizeof(f->d[0]), found_btree_node_cmp_pos, NULL);
+	sort_r(f->d, f->nr, sizeof(f->d[0]), found_btree_node_cmp_pos, NULL, c);
 
 	bch_verbose(c, "Nodes found before overwrites:");
 	for (i = f->d; i < f->d + f->nr; i++) {
