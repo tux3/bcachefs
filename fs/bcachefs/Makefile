@@ -69,6 +69,7 @@ bcachefs-y		:=	\
 	two_state_shared_lock.o	\
 	util.o			\
 	varint.o		\
-	xattr.o
+	xattr.o			\
+	zone.o
 
 bcachefs-$(CONFIG_BCACHEFS_POSIX_ACL) += acl.o

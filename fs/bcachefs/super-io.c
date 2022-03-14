@@ -4,6 +4,7 @@
 #include "btree_update_interior.h"
 #include "buckets.h"
 #include "checksum.h"
+#include "counters.h"
 #include "disk_groups.h"
 #include "ec.h"
 #include "error.h"
@@ -17,7 +18,7 @@
 #include "super-io.h"
 #include "super.h"
 #include "vstructs.h"
-#include "counters.h"
+#include "zone.h"
 
 #include <linux/backing-dev.h>
 #include <linux/sort.h>
