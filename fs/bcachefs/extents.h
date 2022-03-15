@@ -318,6 +318,8 @@ static inline struct bkey_ptrs bch2_bkey_ptrs(struct bkey_s k)
 			(_ptr).ec = _entry->stripe_ptr;			\
 			(_ptr).has_ec	= true;				\
 			break;						\
+		default:						\
+			continue;					\
 		}							\
 out:									\
 	_entry < (_end);						\
