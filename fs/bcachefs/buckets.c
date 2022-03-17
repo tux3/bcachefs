@@ -21,6 +21,7 @@
 #include "reflink.h"
 #include "replicas.h"
 #include "subvolume.h"
+#include "zone.h"
 
 #include <linux/preempt.h>
 #include <trace/events/bcachefs.h>
@@ -70,9 +71,8 @@ void bch2_fs_usage_initialize(struct bch_fs *c)
 	for_each_member_device(ca, c, i) {
 		struct bch_dev_usage dev = bch2_dev_usage_read(ca);
 
-		usage->hidden += (dev.d[BCH_DATA_sb].buckets +
-				  dev.d[BCH_DATA_journal].buckets) *
-			ca->mi.bucket_size;
+		usage->hidden += dev.d[BCH_DATA_sb].sectors;
+		usage->hidden += dev.d[BCH_DATA_journal].sectors;
 	}
 
 	percpu_up_write(&c->mark_lock);
@@ -1943,7 +1943,8 @@ static int __bch2_trans_mark_dev_sb(struct btree_trans *trans,
 	for (i = 0; i < ca->journal.nr; i++) {
 		ret = bch2_trans_mark_metadata_bucket(trans, ca,
 				ca->journal.buckets[i],
-				BCH_DATA_journal, ca->mi.bucket_size);
+				BCH_DATA_journal,
+				bucket_capacity(ca, ca->journal.buckets[i]));
 		if (ret)
 			return ret;
 	}

@@ -17,6 +17,7 @@
 #include "journal_reclaim.h"
 #include "journal_sb.h"
 #include "journal_seq_blacklist.h"
+#include "zone.h"
 
 #include <trace/events/bcachefs.h>
 
@@ -863,7 +864,7 @@ static int __bch2_set_nr_journal_buckets(struct bch_dev *ca, unsigned nr,
 			ret = bch2_trans_run(c,
 				bch2_trans_mark_metadata_bucket(&trans, ca,
 						bu[i], BCH_DATA_journal,
-						ca->mi.bucket_size));
+						bucket_capacity(ca, bu[i])));
 			if (ret) {
 				bch2_fs_inconsistent(c, "error marking new journal buckets: %i", ret);
 				goto err;

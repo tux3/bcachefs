@@ -14,6 +14,7 @@
 #include "journal_reclaim.h"
 #include "journal_seq_blacklist.h"
 #include "replicas.h"
+#include "zone.h"
 
 #include <trace/events/bcachefs.h>
 
@@ -859,7 +860,7 @@ static int journal_read_bucket(struct bch_dev *ca,
 	struct jset *j = NULL;
 	unsigned sectors, sectors_read = 0;
 	u64 offset = bucket_to_sector(ca, ja->buckets[bucket]),
-	    end = offset + ca->mi.bucket_size;
+	    end = offset + bucket_capacity(ca, ja->buckets[bucket]);
 	bool saw_bad = false, csum_good;
 	int ret = 0;
 
@@ -988,7 +989,8 @@ static void bch2_journal_read_device(struct closure *cl)
 	struct journal_replay *r, **_r;
 	struct genradix_iter iter;
 	struct journal_read_buf buf = { NULL, 0 };
-	unsigned i;
+	u64 cur_bucket;
+	unsigned i, wrote = 0, cur_bucket_capacity;
 	int ret = 0;
 
 	if (!ja->nr)
@@ -1006,7 +1008,8 @@ static void bch2_journal_read_device(struct closure *cl)
 			goto err;
 	}
 
-	ja->sectors_free = ca->mi.bucket_size;
+	cur_bucket = ja->buckets[ja->cur_idx];
+	cur_bucket_capacity = bucket_capacity(ca, cur_bucket);
 
 	mutex_lock(&jlist->lock);
 	genradix_for_each_reverse(&c->journal_entries, iter, _r) {
@@ -1016,12 +1019,14 @@ static void bch2_journal_read_device(struct closure *cl)
 			continue;
 
 		for (i = 0; i < r->nr_ptrs; i++) {
-			if (r->ptrs[i].dev == ca->dev_idx) {
-				unsigned wrote = bucket_remainder(ca, r->ptrs[i].sector) +
-					vstruct_sectors(&r->j, c->block_bits);
+			if (r->ptrs[i].dev == ca->dev_idx &&
+			    sector_to_bucket(ca, r->ptrs[i].sector) == ja->buckets[ja->cur_idx]) {
+				wrote = max_t(u64, wrote, r->ptrs[i].sector -
+					      bucket_to_sector(ca, cur_bucket) +
+					      vstruct_sectors(&r->j, c->block_bits));
 
 				ja->cur_idx = r->ptrs[i].bucket;
-				ja->sectors_free = ca->mi.bucket_size - wrote;
+				ja->sectors_free = cur_bucket_capacity - wrote;
 				goto found;
 			}
 		}
@@ -1029,16 +1034,8 @@ static void bch2_journal_read_device(struct closure *cl)
 found:
 	mutex_unlock(&jlist->lock);
 
-	if (ja->bucket_seq[ja->cur_idx] &&
-	    ja->sectors_free == ca->mi.bucket_size) {
-		bch_err(c, "ja->sectors_free == ca->mi.bucket_size");
-		bch_err(c, "cur_idx %u/%u", ja->cur_idx, ja->nr);
-		for (i = 0; i < 3; i++) {
-			unsigned idx = (ja->cur_idx + ja->nr - 1 + i) % ja->nr;
-			bch_err(c, "bucket_seq[%u] = %llu", idx, ja->bucket_seq[idx]);
-		}
-		ja->sectors_free = 0;
-	}
+	BUG_ON(!wrote);
+	ja->sectors_free = cur_bucket_capacity - min(wrote, cur_bucket_capacity);
 
 	/*
 	 * Set dirty_idx to indicate the entire journal is full and needs to be
@@ -1066,11 +1063,6 @@ void bch2_journal_ptrs_to_text(struct printbuf *out, struct bch_fs *c,
 	unsigned i;
 
 	for (i = 0; i < j->nr_ptrs; i++) {
-		struct bch_dev *ca = bch_dev_bkey_exists(c, j->ptrs[i].dev);
-		u64 offset;
-
-		div64_u64_rem(j->ptrs[i].sector, ca->mi.bucket_size, &offset);
-
 		if (i)
 			prt_printf(out, " ");
 		prt_printf(out, "%u:%u:%u (sector %llu)",
@@ -1321,6 +1313,7 @@ static void __journal_write_alloc(struct journal *j,
 	struct journal_device *ja;
 	struct bch_dev *ca;
 	unsigned i;
+	u64 b;
 
 	if (*replicas >= replicas_want)
 		return;
@@ -1345,12 +1338,12 @@ static void __journal_write_alloc(struct journal *j,
 			continue;
 
 		bch2_dev_stripe_increment(ca, &j->wp.stripe);
+		b = ja->buckets[ja->cur_idx];
 
 		bch2_bkey_append_ptr(&w->key,
 			(struct bch_extent_ptr) {
-				  .offset = bucket_to_sector(ca,
-					ja->buckets[ja->cur_idx]) +
-					ca->mi.bucket_size -
+				  .offset = bucket_to_sector(ca, b) +
+					bucket_capacity(ca, b) -
 					ja->sectors_free,
 				  .dev = ca->dev_idx,
 		});
@@ -1405,7 +1398,7 @@ retry:
 		    bch2_journal_dev_buckets_available(j, ja,
 					journal_space_discarded)) {
 			ja->cur_idx = (ja->cur_idx + 1) % ja->nr;
-			ja->sectors_free = ca->mi.bucket_size;
+			ja->sectors_free = bucket_capacity(ca, ja->buckets[ja->cur_idx]);
 
 			/*
 			 * ja->bucket_seq[ja->cur_idx] must always have

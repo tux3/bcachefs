@@ -464,6 +464,15 @@ struct io_count {
 	u64			sectors[2][BCH_DATA_NR];
 };
 
+struct bucket_capacities {
+	u32 nr, size;
+
+	struct bucket_capacity {
+		u32		start;
+		u32		sectors;
+	}			*d;
+};
+
 struct bch_dev {
 	struct kobject		kobj;
 	struct percpu_ref	ref;
@@ -474,13 +483,15 @@ struct bch_dev {
 	struct bch_fs		*fs;
 
 	u8			dev_idx;
+	uuid_le			uuid;
+	char			name[BDEVNAME_SIZE];
 	/*
 	 * Cached version of this device's member info from superblock
 	 * Committed by bch2_write_super() -> bch_fs_mi_update()
 	 */
 	struct bch_member_cpu	mi;
-	uuid_le			uuid;
-	char			name[BDEVNAME_SIZE];
+	struct bucket_capacities buckets;
+	u64			capacity;
 
 	struct bch_sb_handle	disk_sb;
 	struct bch_sb		*sb_read_scratch;

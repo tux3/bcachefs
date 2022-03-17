@@ -1216,7 +1216,7 @@ void *bch2_writepoint_ec_buf(struct bch_fs *c, struct write_point *wp)
 		return NULL;
 
 	ca	= bch_dev_bkey_exists(c, ob->dev);
-	offset	= ca->mi.bucket_size - ob->sectors_free;
+	offset	= ob->bucket_size - ob->sectors_free;
 
 	return ob->ec->new_stripe.data[ob->ec_idx] + (offset << 9);
 }
