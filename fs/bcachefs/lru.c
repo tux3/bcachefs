@@ -49,7 +49,6 @@ void bch2_lru_pos_to_text(struct printbuf *out, struct bpos lru)
 static int __bch2_lru_set(struct btree_trans *trans, u16 lru_id,
 			u64 dev_bucket, u64 time, unsigned key_type)
 {
-	struct btree_iter iter;
 	struct bkey_i *k;
 	int ret = 0;
 
@@ -69,13 +68,7 @@ static int __bch2_lru_set(struct btree_trans *trans, u16 lru_id,
 	EBUG_ON(lru_pos_time(k->k.p) != time);
 	EBUG_ON(k->k.p.offset != dev_bucket);
 
-	bch2_trans_iter_init(trans, &iter, BTREE_ID_lru,
-			     k->k.p, BTREE_ITER_INTENT);
-
-	ret = bch2_btree_iter_traverse(&iter) ?:
-		bch2_trans_update(trans, &iter, k, 0);
-	bch2_trans_iter_exit(trans, &iter);
-	return ret;
+	return bch2_trans_update_buffered(trans, BTREE_ID_lru, k);
 }
 
 int bch2_lru_del(struct btree_trans *trans, u16 lru_id, u64 dev_bucket, u64 time)
