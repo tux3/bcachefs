@@ -38,12 +38,14 @@ static int bch2_btree_write_buffer_flush_one(struct btree_trans *trans,
 					     size_t *fast)
 {
 	struct bch_fs *c = trans->c;
-	struct btree_path *path = iter->path;
+	struct btree_path *path;
 	int ret;
 
 	ret = bch2_btree_iter_traverse(iter);
 	if (ret)
 		return ret;
+
+	path = iter->path;
 
 	if (!*write_locked) {
 		ret = bch2_btree_node_lock_write(trans, path, &path->l[0].b->c);
@@ -152,10 +154,10 @@ int __bch2_btree_write_buffer_flush(struct btree_trans *trans, unsigned commit_f
 		if (!iter.path || iter.path->btree_id != i->btree) {
 			bch2_trans_iter_exit(trans, &iter);
 			bch2_trans_iter_init(trans, &iter, i->btree, i->k.k.p, BTREE_ITER_INTENT);
-			iter.path->preserve = false;
 		}
 
 		bch2_btree_iter_set_pos(&iter, i->k.k.p);
+		iter.path->preserve = false;
 
 		do {
 			ret = bch2_btree_write_buffer_flush_one(trans, &iter, i,
@@ -224,6 +226,13 @@ slowpath:
 	}
 
 	goto out;
+}
+
+int bch2_btree_write_buffer_flush_sync(struct btree_trans *trans)
+{
+	bch2_trans_unlock(trans);
+	mutex_lock(&trans->c->btree_write_buffer.flush_lock);
+	return __bch2_btree_write_buffer_flush(trans, 0, true);
 }
 
 int bch2_btree_write_buffer_flush(struct btree_trans *trans)
