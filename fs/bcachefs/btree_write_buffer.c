@@ -88,6 +88,8 @@ static union btree_write_buffer_state btree_write_buffer_switch(struct btree_wri
 	while (old.idx == 0 ? wb->state.ref0 : wb->state.ref1)
 		cpu_relax();
 
+	smp_mb();
+
 	return old;
 }
 
