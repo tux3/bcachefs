@@ -379,6 +379,14 @@ static inline void lockdep_set_selftest_task(struct task_struct *task)
 		do { (void)(key); } while (0)
 #define lockdep_set_subclass(lock, sub)		do { } while (0)
 
+#ifdef CONFIG_PROVE_LOCKING
+void lockdep_set_lock_cmp_fn(struct lockdep_map *, lock_cmp_fn, lock_print_fn);
+
+#define lock_set_cmp_fn(lock, ...)	lockdep_set_lock_cmp_fn(&(lock)->dep_map, __VA_ARGS__)
+#else
+#define lock_set_cmp_fn(lock, ...)	do {} while (0)
+#endif
+
 #define lockdep_set_novalidate_class(lock) do { } while (0)
 
 /*
