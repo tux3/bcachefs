@@ -828,17 +828,43 @@ static void extent_stripe_ptr_add(struct bkey_s_extent e,
 }
 
 static int ec_stripe_update_extent(struct btree_trans *trans,
-				   struct btree_iter *iter,
-				   struct bkey_s_c k,
-				   struct ec_stripe_buf *s)
+				   struct bpos bucket, u8 gen,
+				   struct ec_stripe_buf *s,
+				   u64 *bp_offset)
 {
+	struct bch_fs *c = trans->c;
+	struct bch_backpointer bp;
+	struct btree_iter iter;
+	struct bkey_s_c k;
 	const struct bch_extent_ptr *ptr_c;
 	struct bch_extent_ptr *ptr, *ec_ptr = NULL;
 	struct bkey_i *n;
 	int ret, dev, block;
 
-	if (extent_has_stripe_ptr(k, s->key.k.p.offset))
+	ret = bch2_get_next_backpointer(trans, bucket, gen,
+				bp_offset, &bp, BTREE_ITER_CACHED);
+	if (ret)
+		return ret;
+	if (*bp_offset == U64_MAX)
 		return 0;
+
+	if (bch2_fs_inconsistent_on(bp.level, c, "found btree node in erasure coded bucket!?"))
+		return -EIO;
+
+	k = bch2_backpointer_get_key(trans, &iter, bucket, *bp_offset, bp);
+	ret = bkey_err(k);
+	if (ret)
+		return ret;
+	if (!k.k) {
+		/*
+		 * extent no longer exists - we could flush the btree
+		 * write buffer and retry to verify, but no need:
+		 */
+		return 0;
+	}
+
+	if (extent_has_stripe_ptr(k, s->key.k.p.offset))
+		goto out;
 
 	ptr_c = bkey_matches_stripe(&s->key.v, k, &block);
 	/*
@@ -846,14 +872,14 @@ static int ec_stripe_update_extent(struct btree_trans *trans,
 	 * XXX: should we be incrementing a counter?
 	 */
 	if (!ptr_c || ptr_c->cached)
-		return 0;
+		goto out;
 
 	dev = s->key.v.ptrs[block].dev;
 
 	n = bch2_bkey_make_mut(trans, k);
 	ret = PTR_ERR_OR_ZERO(n);
 	if (ret)
-		return ret;
+		goto out;
 
 	bch2_bkey_drop_ptrs(bkey_i_to_s(n), ptr, ptr->dev != dev);
 	ec_ptr = (void *) bch2_bkey_has_device(bkey_i_to_s_c(n), dev);
@@ -861,7 +887,10 @@ static int ec_stripe_update_extent(struct btree_trans *trans,
 
 	extent_stripe_ptr_add(bkey_i_to_s_extent(n), s, ec_ptr, block);
 
-	return bch2_trans_update(trans, iter, n, 0);
+	ret = bch2_trans_update(trans, &iter, n, 0);
+out:
+	bch2_trans_iter_exit(trans, &iter);
+	return ret;
 }
 
 static int ec_stripe_update_bucket(struct btree_trans *trans, struct ec_stripe_buf *s,
@@ -870,50 +899,21 @@ static int ec_stripe_update_bucket(struct btree_trans *trans, struct ec_stripe_b
 	struct bch_fs *c = trans->c;
 	struct bch_extent_ptr bucket = s->key.v.ptrs[block];
 	struct bpos bucket_pos = PTR_BUCKET_POS(c, &bucket);
-	struct bch_backpointer bp;
-	struct btree_iter iter;
-	struct bkey_s_c k;
 	u64 bp_offset = 0;
 	int ret = 0;
-retry:
-	while (1) {
-		bch2_trans_begin(trans);
 
-		ret = bch2_get_next_backpointer(trans, bucket_pos, bucket.gen,
-						&bp_offset, &bp,
-						BTREE_ITER_CACHED);
+	while (1) {
+		ret = commit_do(trans, NULL, NULL,
+				BTREE_INSERT_NOFAIL,
+			ec_stripe_update_extent(trans, bucket_pos, bucket.gen,
+						s, &bp_offset));
 		if (ret)
 			break;
 		if (bp_offset == U64_MAX)
 			break;
 
-		if (bch2_fs_inconsistent_on(bp.level, c, "found btree node in erasure coded bucket!?")) {
-			ret = -EIO;
-			break;
-		}
-
-		k = bch2_backpointer_get_key(trans, &iter, bucket_pos, bp_offset, bp);
-		ret = bkey_err(k);
-		if (ret)
-			break;
-		if (!k.k) {
-			/*
-			 * extent no longer exists - we could flush the btree
-			 * write buffer and retry to verify, but no need:
-			 */
-			goto next;
-		}
-
-		ret = ec_stripe_update_extent(trans, &iter, k, s);
-		bch2_trans_iter_exit(trans, &iter);
-		if (ret)
-			break;
-next:
 		bp_offset++;
 	}
-
-	if (bch2_err_matches(ret, BCH_ERR_transaction_restart))
-		goto retry;
 
 	return ret;
 }
@@ -1459,7 +1459,7 @@ static int __bch2_ec_stripe_head_reuse(struct bch_fs *c,
 	}
 
 	bkey_copy(&h->s->new_stripe.key.k_i,
-			&h->s->existing_stripe.key.k_i);
+		  &h->s->existing_stripe.key.k_i);
 
 	return 0;
 }
