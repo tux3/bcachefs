@@ -606,9 +606,12 @@ static int ref_visible(struct bch_fs *c, struct snapshots_seen *s,
 }
 
 static int ref_visible2(struct bch_fs *c,
-		       u32 src, struct snapshots_seen *src_seen,
-		       u32 dst, struct snapshots_seen *dst_seen)
+			u32 src, struct snapshots_seen *src_seen,
+			u32 dst, struct snapshots_seen *dst_seen)
 {
+	src = bch2_snapshot_equiv(c, src);
+	dst = bch2_snapshot_equiv(c, dst);
+
 	if (dst > src) {
 		swap(dst, src);
 		swap(dst_seen, src_seen);
