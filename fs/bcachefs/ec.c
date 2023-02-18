@@ -896,14 +896,19 @@ retry:
 		ret = bkey_err(k);
 		if (ret)
 			break;
-		if (!k.k)
-			continue;
+		if (!k.k) {
+			/*
+			 * extent no longer exists - we could flush the btree
+			 * write buffer and retry to verify, but no need:
+			 */
+			goto next;
+		}
 
 		ret = ec_stripe_update_extent(trans, &iter, k, s);
 		bch2_trans_iter_exit(trans, &iter);
 		if (ret)
 			break;
-
+next:
 		bp_offset++;
 	}
 
