@@ -4,6 +4,7 @@
 #include "alloc_background.h"
 #include "btree_iter.h"
 #include "btree_update.h"
+#include "btree_write_buffer.h"
 #include "error.h"
 #include "lru.h"
 #include "recovery.h"
@@ -101,7 +102,8 @@ static const char * const bch2_lru_types[] = {
 
 static int bch2_check_lru_key(struct btree_trans *trans,
 			      struct btree_iter *lru_iter,
-			      struct bkey_s_c lru_k)
+			      struct bkey_s_c lru_k,
+			      struct bpos *last_flushed_pos)
 {
 	struct bch_fs *c = trans->c;
 	struct btree_iter iter;
@@ -137,19 +139,25 @@ static int bch2_check_lru_key(struct btree_trans *trans,
 		break;
 	}
 
-	if (fsck_err_on(lru_k.k->type != KEY_TYPE_set ||
-			lru_pos_time(lru_k.k->p) != idx, c,
-			"incorrect lru entry: lru %s time %llu\n"
-			"  %s\n"
-			"  for %s",
-			bch2_lru_types[type],
-			lru_pos_time(lru_k.k->p),
-			(bch2_bkey_val_to_text(&buf1, c, lru_k), buf1.buf),
-			(bch2_bkey_val_to_text(&buf2, c, k), buf2.buf))) {
-		ret = bch2_btree_delete_at(trans, lru_iter, 0);
-		if (ret)
-			goto err;
+	if (lru_k.k->type != KEY_TYPE_set ||
+	    lru_pos_time(lru_k.k->p) != idx) {
+		if (!bpos_eq(*last_flushed_pos, lru_k.k->p)) {
+			*last_flushed_pos = lru_k.k->p;
+			ret = bch2_btree_write_buffer_flush_sync(trans) ?:
+				-BCH_ERR_transaction_restart_write_buffer_flush;
+			goto out;
+		}
+
+		if (fsck_err(c, "incorrect lru entry: lru %s time %llu\n"
+			     "  %s\n"
+			     "  for %s",
+			     bch2_lru_types[type],
+			     lru_pos_time(lru_k.k->p),
+			     (bch2_bkey_val_to_text(&buf1, c, lru_k), buf1.buf),
+			     (bch2_bkey_val_to_text(&buf2, c, k), buf2.buf)))
+			ret = bch2_btree_delete_at(trans, lru_iter, 0);
 	}
+out:
 err:
 fsck_err:
 	bch2_trans_iter_exit(trans, &iter);
@@ -163,6 +171,7 @@ int bch2_check_lrus(struct bch_fs *c)
 	struct btree_trans trans;
 	struct btree_iter iter;
 	struct bkey_s_c k;
+	struct bpos last_flushed_pos = POS_MIN;
 	int ret = 0;
 
 	bch2_trans_init(&trans, c, 0, 0);
@@ -170,7 +179,7 @@ int bch2_check_lrus(struct bch_fs *c)
 	ret = for_each_btree_key_commit(&trans, iter,
 			BTREE_ID_lru, POS_MIN, BTREE_ITER_PREFETCH, k,
 			NULL, NULL, BTREE_INSERT_NOFAIL|BTREE_INSERT_LAZY_RW,
-		bch2_check_lru_key(&trans, &iter, k));
+		bch2_check_lru_key(&trans, &iter, k, &last_flushed_pos));
 
 	bch2_trans_exit(&trans);
 	return ret;
