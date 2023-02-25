@@ -1804,6 +1804,8 @@ void bch2_fs_ec_init_early(struct bch_fs *c)
 
 int bch2_fs_ec_init(struct bch_fs *c)
 {
+	spin_lock_init(&c->ec_stripes_new_lock);
+
 	return bioset_init(&c->ec_bioset, 1, offsetof(struct ec_bio, bio),
 			   BIOSET_NEED_BVECS);
 }
