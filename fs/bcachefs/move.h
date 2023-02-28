@@ -36,6 +36,24 @@ struct moving_context {
 	wait_queue_head_t	wait;
 };
 
+struct moving_io {
+	struct list_head		read_list;
+	struct list_head		io_list;
+	struct move_bucket_in_flight	*b;
+	struct closure			cl;
+	bool				read_completed;
+	bool				write_completed;
+
+	unsigned			read_sectors;
+	unsigned			write_sectors;
+
+	struct bch_read_bio		rbio;
+
+	struct data_update		write;
+	/* Must be last since it is variable size */
+	struct bio_vec			bi_inline_vecs[0];
+};
+
 #define move_ctxt_wait_event(_ctxt, _trans, _cond)			\
 do {									\
 	bool cond_finished = false;					\

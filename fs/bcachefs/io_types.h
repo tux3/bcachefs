@@ -112,7 +112,7 @@ struct bch_write_op {
 	u64			start_time;
 
 	unsigned		written; /* sectors */
-	u16			flags;
+	u32			flags;
 	s16			error; /* dio write path expects it to hold -ERESTARTSYS... */
 
 	unsigned		compression_opt:8;
@@ -121,7 +121,6 @@ struct bch_write_op {
 	unsigned		nr_replicas_required:4;
 	unsigned		watermark:3;
 	unsigned		incompressible:1;
-	unsigned		stripe_waited:1;
 
 	struct bch_devs_list	devs_have;
 	u16			target;
@@ -143,6 +142,7 @@ struct bch_write_op {
 	struct disk_reservation	res;
 
 	struct open_buckets	open_buckets;
+	struct ec_stripe_new	*stripe;
 
 	u64			new_i_size;
 	s64			i_sectors_delta;

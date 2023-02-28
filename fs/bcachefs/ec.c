@@ -1083,7 +1083,8 @@ static void ec_stripe_create(struct ec_stripe_new *s)
 
 	if (s->err) {
 		if (!bch2_err_matches(s->err, EROFS))
-			bch_err(c, "error creating stripe: error writing data buckets");
+			bch_err(c, "error creating stripe: error writing data buckets: %s",
+				bch2_err_str(s->err));
 		goto err;
 	}
 
@@ -1117,6 +1118,7 @@ static void ec_stripe_create(struct ec_stripe_new *s)
 
 	if (ec_nr_failed(&s->new_stripe)) {
 		bch_err(c, "error creating stripe: error writing redundancy buckets");
+		s->err = -EIO;
 		goto err;
 	}
 
@@ -1127,14 +1129,18 @@ static void ec_stripe_create(struct ec_stripe_new *s)
 					bkey_i_to_stripe(&s->new_stripe.key),
 					!s->have_existing_stripe));
 	if (ret) {
-		bch_err(c, "error creating stripe: error creating stripe key");
+		if (!bch2_err_matches(ret, EROFS))
+			bch_err(c, "error creating stripe: error creating stripe key: %s",
+				bch2_err_str(ret));
+		s->err = ret;
 		goto err;
 	}
 
 	ret = ec_stripe_update_extents(c, &s->new_stripe);
 	if (ret) {
-		bch_err(c, "error creating stripe: error updating pointers: %s",
-			bch2_err_str(ret));
+		if (!bch2_err_matches(ret, EROFS))
+			bch_err(c, "error creating stripe: error updating pointers: %s",
+				bch2_err_str(ret));
 		goto err;
 	}
 err:
@@ -1156,6 +1162,8 @@ err:
 	list_del(&s->list);
 	mutex_unlock(&c->ec_stripe_new_lock);
 	wake_up(&c->ec_stripe_new_wait);
+
+	closure_wake_up(&s->create_done);
 
 	ec_stripe_buf_exit(&s->existing_stripe);
 	ec_stripe_buf_exit(&s->new_stripe);
@@ -1278,11 +1286,6 @@ static unsigned pick_blocksize(struct bch_fs *c,
 		best = cur;
 
 	return best.size;
-}
-
-static bool may_create_new_stripe(struct bch_fs *c)
-{
-	return false;
 }
 
 static void ec_stripe_key_init(struct bch_fs *c,
@@ -1521,9 +1524,6 @@ static s64 get_existing_stripe(struct bch_fs *c,
 	u64 stripe_idx;
 	s64 ret = -1;
 
-	if (may_create_new_stripe(c))
-		return -1;
-
 	mutex_lock(&c->ec_stripes_heap_lock);
 	for (heap_idx = 0; heap_idx < h->used; heap_idx++) {
 		/* No blocks worth reusing, stripe will just be deleted: */
@@ -1555,6 +1555,8 @@ static int __bch2_ec_stripe_head_reuse(struct btree_trans *trans, struct ec_stri
 	unsigned i;
 	s64 idx;
 	int ret;
+
+	BUG_ON(h->s->res.sectors);
 
 	/*
 	 * If we can't allocate a new stripe, and there's no stripes with empty
@@ -1604,7 +1606,7 @@ static int __bch2_ec_stripe_head_reuse(struct btree_trans *trans, struct ec_stri
 			__set_bit(i, h->s->blocks_allocated);
 		}
 
-		ec_block_io(c, &h->s->existing_stripe, READ, i, &h->s->iodone);
+		ec_block_io(c, &h->s->existing_stripe, REQ_OP_READ, i, &h->s->iodone);
 	}
 
 	bkey_copy(&h->s->new_stripe.key, &h->s->existing_stripe.key);
@@ -1621,6 +1623,8 @@ static int __bch2_ec_stripe_head_reserve(struct btree_trans *trans, struct ec_st
 	struct bpos min_pos = POS(0, 1);
 	struct bpos start_pos = bpos_max(min_pos, POS(0, c->ec_stripe_hint));
 	int ret;
+
+	BUG_ON(!hlist_unhashed(&h->s->hash));
 
 	if (!h->s->res.sectors) {
 		ret = bch2_disk_reservation_get(c, &h->s->res,
@@ -1690,7 +1694,7 @@ struct ec_stripe_head *bch2_ec_stripe_head_get(struct btree_trans *trans,
 	if (!h->s) {
 		ret = ec_new_stripe_alloc(c, h);
 		if (ret) {
-			bch_err(c, "failed to allocate new stripe");
+			bch_err(c, "failed to allocate new stripe: %s", bch2_err_str(ret));
 			goto err;
 		}
 	}

@@ -326,12 +326,12 @@ static int bch2_copygc_thread(void *arg)
 	}
 
 	set_freezable();
-	bch2_trans_init(&trans, c, 0, 0);
 
 	bch2_move_stats_init(&move_stats, "copygc");
 	bch2_moving_ctxt_init(&ctxt, c, NULL, &move_stats,
 			      writepoint_ptr(&c->copygc_write_point),
 			      false);
+	bch2_trans_init(&trans, c, 0, 0);
 
 	while (!ret && !kthread_should_stop()) {
 		bch2_trans_unlock(&trans);
@@ -343,7 +343,9 @@ static int bch2_copygc_thread(void *arg)
 		}
 
 		if (unlikely(freezing(current))) {
-			move_buckets_wait(&trans, &ctxt, &move_buckets, true);
+			move_ctxt_wait_event(&ctxt, &trans,
+					list_empty(&ctxt.reads) &&
+					!atomic_read(&ctxt.write_sectors));
 			__refrigerator(false);
 			continue;
 		}
@@ -354,7 +356,9 @@ static int bch2_copygc_thread(void *arg)
 		if (wait > clock->max_slop) {
 			c->copygc_wait_at = last;
 			c->copygc_wait = last + wait;
-			move_buckets_wait(&trans, &ctxt, &move_buckets, true);
+			move_ctxt_wait_event(&ctxt, &trans,
+					list_empty(&ctxt.reads) &&
+					!atomic_read(&ctxt.write_sectors));
 			trace_and_count(c, copygc_wait, c, wait, last + wait);
 			bch2_kthread_io_clock_wait(clock, last + wait,
 					MAX_SCHEDULE_TIMEOUT);

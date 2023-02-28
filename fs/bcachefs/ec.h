@@ -159,6 +159,7 @@ struct ec_stripe_new {
 	u64			idx;
 
 	struct closure		iodone;
+	struct closure_waitlist	create_done;
 
 	atomic_t		ref[STRIPE_REF_NR];
 

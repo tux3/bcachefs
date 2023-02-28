@@ -40,6 +40,8 @@ const char *bch2_blk_status_to_str(blk_status_t);
 	x(CHECK_ENOSPC)			\
 	x(SYNC)				\
 	x(MOVE)				\
+	x(WAIT_FOR_EC)			\
+	x(STRIPE_WAITED)		\
 	x(IN_WORKER)			\
 	x(DONE)				\
 	x(IO_ERROR)			\
@@ -92,6 +94,7 @@ static inline void bch2_write_op_init(struct bch_write_op *op, struct bch_fs *c,
 	op->watermark		= BCH_WATERMARK_normal;
 	op->incompressible	= 0;
 	op->open_buckets.nr	= 0;
+	op->stripe		= NULL;
 	op->devs_have.nr	= 0;
 	op->target		= 0;
 	op->opts		= opts;

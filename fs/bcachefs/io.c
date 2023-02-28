@@ -720,11 +720,24 @@ static void bch2_write_done(struct closure *cl)
 		op->end_io(op);
 }
 
-static noinline int bch2_write_drop_io_error_ptrs(struct bch_write_op *op)
+static noinline int bch2_write_handle_io_error(struct bch_write_op *op)
 {
+	struct bch_fs *c = op->c;
 	struct keylist *keys = &op->insert_keys;
 	struct bch_extent_ptr *ptr;
 	struct bkey_i *src, *dst = keys->keys, *n;
+	unsigned dev;
+
+	/* If some a bucket wasn't written, we can't erasure code it: */
+	for_each_set_bit(dev, op->failed.d, BCH_SB_MEMBERS_MAX)
+		bch2_open_bucket_write_error(c, &op->open_buckets, dev);
+
+	if (op->stripe && !(op->flags & BCH_WRITE_STRIPE_WAITED)) {
+		op->stripe->err = -EIO;
+		ec_stripe_new_put(c, op->stripe, STRIPE_REF_io);
+
+		op->flags |= BCH_WRITE_STRIPE_WAITED;
+	}
 
 	for (src = keys->keys; src != keys->top; src = n) {
 		n = bkey_next(src);
@@ -748,8 +761,33 @@ static noinline int bch2_write_drop_io_error_ptrs(struct bch_write_op *op)
 
 enum bch_write_step {
 	BCH_WRITE_STEP_MORE,
+	BCH_WRITE_STEP_WAIT_FOR_EC,
 	BCH_WRITE_STEP_DONE,
 };
+
+static noinline int bch2_write_index_stripe(struct bch_write_op *op)
+{
+	struct moving_io *io = container_of(op, struct moving_io, write.op);
+	struct bch_fs *c = op->c;
+
+	BUG_ON(op->open_buckets.nr);
+
+	if (op->flags & BCH_WRITE_STRIPE_WAITED)
+		return op->stripe->err;
+
+	if (!io->write_completed) {
+		atomic_sub(io->write_sectors, &io->write.ctxt->write_sectors);
+		atomic_dec(&io->write.ctxt->write_ios);
+		wake_up(&io->write.ctxt->wait);
+		io->write_completed = true;
+	}
+
+	closure_wait(&op->stripe->create_done, &op->cl);
+	ec_stripe_new_put(c, op->stripe, STRIPE_REF_io);
+	op->flags |= BCH_WRITE_STRIPE_WAITED;
+
+	return BCH_WRITE_STEP_WAIT_FOR_EC;
+}
 
 /**
  * bch_write_index - after a write, update index to point to new data
@@ -759,13 +797,20 @@ static enum bch_write_step __bch2_write_index(struct bch_write_op *op)
 	struct bch_fs *c = op->c;
 	struct keylist *keys = &op->insert_keys;
 	struct bkey_i *k;
-	unsigned dev;
 	int ret = 0;
 
 	if (unlikely(op->flags & BCH_WRITE_IO_ERROR)) {
-		ret = bch2_write_drop_io_error_ptrs(op);
+		ret = bch2_write_handle_io_error(op);
 		if (ret)
 			goto err;
+	}
+
+	if (unlikely(op->stripe)) {
+		ret = bch2_write_index_stripe(op);
+		if (ret < 0)
+			goto err;
+		if (ret)
+			return ret;
 	}
 
 	if (!bch2_keylist_empty(keys)) {
@@ -785,7 +830,8 @@ static enum bch_write_step __bch2_write_index(struct bch_write_op *op)
 
 			bch_err_inum_offset_ratelimited(c,
 				k->k.p.inode, k->k.p.offset << 9,
-				"write error while doing btree update: %s",
+				"write error while doing btree update (move %u): %s",
+				(op->flags & BCH_WRITE_MOVE) != 0,
 				bch2_err_str(ret));
 		}
 
@@ -793,11 +839,14 @@ static enum bch_write_step __bch2_write_index(struct bch_write_op *op)
 			goto err;
 	}
 out:
-	/* If some a bucket wasn't written, we can't erasure code it: */
-	for_each_set_bit(dev, op->failed.d, BCH_SB_MEMBERS_MAX)
-		bch2_open_bucket_write_error(c, &op->open_buckets, dev);
+	if (op->stripe) {
+		BUG_ON(!(op->flags & BCH_WRITE_STRIPE_WAITED));
+		ec_stripe_new_put(c, op->stripe, STRIPE_REF_stripe);
+		op->stripe = NULL;
+	}
 
 	bch2_open_buckets_put(c, &op->open_buckets);
+
 	return op->flags & BCH_WRITE_DONE
 		? BCH_WRITE_STEP_DONE
 		: BCH_WRITE_STEP_MORE;
@@ -840,7 +889,8 @@ static void bch2_write_index(struct closure *cl)
 	unsigned long flags;
 
 	if ((op->flags & BCH_WRITE_DONE) &&
-	    (op->flags & BCH_WRITE_MOVE))
+	    (op->flags & BCH_WRITE_MOVE) &&
+	    op->wbio.bio.bi_vcnt)
 		bch2_bio_free_pages_pool(op->c, &op->wbio.bio);
 
 	spin_lock_irqsave(&wp->writes_lock, flags);
@@ -885,6 +935,10 @@ void bch2_write_point_do_index_updates(struct work_struct *work)
 		switch (__bch2_write_index(op)) {
 		case BCH_WRITE_STEP_MORE:
 			__bch2_write(op);
+			break;
+		case BCH_WRITE_STEP_WAIT_FOR_EC:
+			bch2_write_queue(op, op->wp);
+			continue_at(&op->cl, bch2_write_index, NULL);
 			break;
 		case BCH_WRITE_STEP_DONE:
 			bch2_write_done(&op->cl);
@@ -936,6 +990,7 @@ static void init_append_extent(struct bch_write_op *op,
 			       struct bversion version,
 			       struct bch_extent_crc_unpacked crc)
 {
+	struct open_bucket *ec_ob;
 	struct bkey_i_extent *e;
 
 	op->pos.offset += crc.uncompressed_size;
@@ -949,6 +1004,22 @@ static void init_append_extent(struct bch_write_op *op,
 	    crc.compression_type ||
 	    crc.nonce)
 		bch2_extent_crc_append(&e->k_i, crc);
+
+	if ((op->flags & BCH_WRITE_WAIT_FOR_EC) &&
+	    (ec_ob = ec_open_bucket(op->c, &wp->ptrs))) {
+		union bch_extent_entry *end = bkey_val_end(bkey_i_to_s(&e->k_i));
+
+		BUG_ON(wp->ptrs.nr != 1);
+
+		end->stripe_ptr = (struct bch_extent_stripe_ptr) {
+			.type = 1 << BCH_EXTENT_ENTRY_stripe_ptr,
+			.block		= ec_ob->ec_idx,
+			.redundancy	= ec_ob->ec->nr_parity,
+			.idx		= ec_ob->ec->idx,
+		};
+
+		e->k.u64s++;
+	}
 
 	bch2_alloc_sectors_append_ptrs_inlined(op->c, wp, &e->k_i, crc.compressed_size,
 				       op->flags & BCH_WRITE_CACHED);
@@ -1141,6 +1212,7 @@ static int bch2_write_extent(struct bch_write_op *op, struct write_point *wp,
 	struct bch_fs *c = op->c;
 	struct bio *src = &op->wbio.bio, *dst = src;
 	struct bvec_iter saved_iter;
+	struct open_bucket *ec_ob;
 	void *ec_buf;
 	unsigned total_output = 0, total_input = 0;
 	bool bounce = false;
@@ -1148,8 +1220,33 @@ static int bch2_write_extent(struct bch_write_op *op, struct write_point *wp,
 	int ret, more = 0;
 
 	BUG_ON(!bio_sectors(src));
+	BUG_ON(op->stripe);
 
-	ec_buf = bch2_writepoint_ec_buf(c, wp);
+	ec_ob = ec_open_bucket(c, &wp->ptrs);
+	if (ec_ob) {
+		struct bch_dev *ca = bch_dev_bkey_exists(c, ec_ob->dev);
+		unsigned offset	= ca->mi.bucket_size - ec_ob->sectors_free;
+
+		ec_buf = ec_ob->ec->new_stripe.data[ec_ob->ec_idx] + (offset << 9);
+	}
+
+	if (likely(!ec_ob || !(op->flags & BCH_WRITE_WAIT_FOR_EC))) {
+		bch2_open_bucket_get(c, wp, &op->open_buckets);
+	} else {
+		/*
+		 * We're going to do a BCH_WRITE_WAIT_FOR_EC write, but we
+		 * already did a normal non EC write: If we hold on to the
+		 * previous open_bucket refs while waiting for the stripe to be
+		 * completed we could cause a deadlock, so instead process the
+		 * write we have so far first:
+		 */
+		if (unlikely(op->open_buckets.nr))
+			return -BCH_ERR_do_partial_write;
+
+		op->stripe = ec_ob->ec;
+		ec_stripe_new_get(op->stripe, STRIPE_REF_stripe);
+		ec_stripe_new_get(op->stripe, STRIPE_REF_io);
+	}
 
 	switch (bch2_write_prep_encoded_data(op, wp)) {
 	case PREP_ENCODED_OK:
@@ -1666,6 +1763,8 @@ static void __bch2_write(struct bch_write_op *op)
 	}
 again:
 	memset(&op->failed, 0, sizeof(op->failed));
+	op->flags &= ~BCH_WRITE_STRIPE_WAITED;
+	op->stripe = NULL;
 
 	do {
 		struct bkey_i *key_to_write;
@@ -1674,7 +1773,8 @@ again:
 
 		/* +1 for possible cache device: */
 		if (op->open_buckets.nr + op->nr_replicas + 1 >
-		    ARRAY_SIZE(op->open_buckets.v))
+		    ARRAY_SIZE(op->open_buckets.v) ||
+		    op->stripe)
 			break;
 
 		if (bch2_keylist_realloc(&op->insert_keys,
@@ -1710,12 +1810,14 @@ again:
 
 		EBUG_ON(!wp);
 
-		bch2_open_bucket_get(c, wp, &op->open_buckets);
 		ret = bch2_write_extent(op, wp, &bio);
 
 		bch2_alloc_sectors_done_inlined(c, wp);
 err:
 		if (ret <= 0) {
+			if (ret == -BCH_ERR_do_partial_write)
+				break;
+
 			op->flags |= BCH_WRITE_DONE;
 
 			if (ret < 0) {
@@ -1737,6 +1839,10 @@ err:
 					  key_to_write, false);
 	} while (ret);
 
+	if ((op->flags & BCH_WRITE_MOVE) &&
+	    !bch2_err_matches(ret, BCH_ERR_operation_blocked))
+		goto queue;
+
 	/*
 	 * Sync or no?
 	 *
@@ -1752,11 +1858,15 @@ err:
 		switch (__bch2_write_index(op)) {
 		case BCH_WRITE_STEP_MORE:
 			goto again;
+		case BCH_WRITE_STEP_WAIT_FOR_EC:
+			/* Waiting on EC synchronously will deadlock: */
+			BUG();
 		case BCH_WRITE_STEP_DONE:
 			bch2_write_done(&op->cl);
 			break;
 		}
 	} else {
+queue:
 		bch2_write_queue(op, wp);
 		continue_at(&op->cl, bch2_write_index, NULL);
 	}
@@ -1898,6 +2008,11 @@ void bch2_write_op_to_text(struct printbuf *out, struct bch_write_op *op)
 	prt_str(out, "started: ");
 	bch2_pr_time_units(out, local_clock() - op->start_time);
 	prt_newline(out);
+
+	if (op->stripe) {
+		prt_printf(out, "stripe: %llu", op->stripe->idx);
+		prt_newline(out);
+	}
 
 	prt_str(out, "flags: ");
 	prt_bitflags(out, bch2_write_flags, op->flags);

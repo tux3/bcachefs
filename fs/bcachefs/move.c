@@ -72,23 +72,6 @@ static void progress_list_del(struct bch_fs *c, struct bch_move_stats *stats)
 	mutex_unlock(&c->data_progress_lock);
 }
 
-struct moving_io {
-	struct list_head		read_list;
-	struct list_head		io_list;
-	struct move_bucket_in_flight	*b;
-	struct closure			cl;
-	bool				read_completed;
-
-	unsigned			read_sectors;
-	unsigned			write_sectors;
-
-	struct bch_read_bio		rbio;
-
-	struct data_update		write;
-	/* Must be last since it is variable size */
-	struct bio_vec			bi_inline_vecs[0];
-};
-
 static void move_free(struct moving_io *io)
 {
 	struct moving_context *ctxt = io->write.ctxt;
@@ -114,8 +97,11 @@ static void move_write_done(struct bch_write_op *op)
 	if (io->write.op.error)
 		ctxt->write_error = true;
 
-	atomic_sub(io->write_sectors, &io->write.ctxt->write_sectors);
-	atomic_dec(&io->write.ctxt->write_ios);
+	if (!io->write_completed) {
+		atomic_sub(io->write_sectors, &io->write.ctxt->write_sectors);
+		atomic_dec(&io->write.ctxt->write_ios);
+	}
+
 	move_free(io);
 	closure_put(&ctxt->cl);
 }
