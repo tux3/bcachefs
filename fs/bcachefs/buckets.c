@@ -1432,6 +1432,7 @@ static inline int bch2_trans_mark_pointer(struct btree_trans *trans,
 }
 
 static int bch2_trans_mark_stripe_ptr(struct btree_trans *trans,
+			struct bkey_s_c k,
 			struct extent_ptr_decoded p,
 			s64 sectors, enum bch_data_type data_type)
 {
@@ -1444,17 +1445,29 @@ static int bch2_trans_mark_stripe_ptr(struct btree_trans *trans,
 			BTREE_ID_stripes, POS(0, p.ec.idx),
 			BTREE_ITER_WITH_UPDATES, stripe);
 	ret = PTR_ERR_OR_ZERO(s);
-	if (unlikely(ret)) {
-		bch2_trans_inconsistent_on(bch2_err_matches(ret, ENOENT), trans,
-			"pointer to nonexistent stripe %llu",
-			(u64) p.ec.idx);
-		goto err;
+	if (unlikely(bch2_err_matches(ret, ENOENT))) {
+		struct printbuf buf = PRINTBUF;
+
+		bch2_bkey_val_to_text(&buf, trans->c, k);
+		bch2_trans_inconsistent(trans,
+			"pointer to nonexistent stripe %llu\n"
+			"while marking %s",
+			(u64) p.ec.idx, buf.buf);
+		printbuf_exit(&buf);
 	}
 
+	if (unlikely(ret))
+		goto err;
+
 	if (!bch2_ptr_matches_stripe(&s->v, p)) {
+		struct printbuf buf = PRINTBUF;
+
+		bch2_bkey_val_to_text(&buf, trans->c, k);
 		bch2_trans_inconsistent(trans,
-			"stripe pointer doesn't match stripe %llu",
-			(u64) p.ec.idx);
+			"stripe pointer doesn't match stripe %llu\n"
+			"while marking %s",
+			(u64) p.ec.idx, buf.buf);
+		printbuf_exit(&buf);
 		ret = -EIO;
 		goto err;
 	}
@@ -1517,7 +1530,7 @@ static int __trans_mark_extent(struct btree_trans *trans,
 			dirty_sectors	       += disk_sectors;
 			r.e.devs[r.e.nr_devs++]	= p.ptr.dev;
 		} else {
-			ret = bch2_trans_mark_stripe_ptr(trans, p,
+			ret = bch2_trans_mark_stripe_ptr(trans, k, p,
 					disk_sectors, data_type);
 			if (ret)
 				return ret;
