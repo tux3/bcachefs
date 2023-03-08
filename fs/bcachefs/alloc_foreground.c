@@ -44,6 +44,8 @@ static void bch2_trans_mutex_lock_norelock(struct btree_trans *trans,
 	}
 }
 
+static void bch2_open_bucket_to_text(struct printbuf *out, struct bch_fs *c, struct open_bucket *ob);
+
 const char * const bch2_watermarks[] = {
 #define x(t) #t,
 	BCH_WATERMARKS()
@@ -676,6 +678,7 @@ static int add_new_bucket(struct bch_fs *c,
 
 	BUG_ON(*nr_effective >= nr_replicas);
 	BUG_ON(flags & BCH_WRITE_ONLY_SPECIFIED_DEVS);
+	BUG_ON(!durability && *have_cache);
 	EBUG_ON(!ob->sectors_free);
 
 	__clear_bit(ob->dev, devs_may_alloc->d);
@@ -684,6 +687,8 @@ static int add_new_bucket(struct bch_fs *c,
 	*have_cache	|= !durability;
 
 	ob_push(c, ptrs, ob);
+
+	BUG_ON(ptrs->nr > 1);
 
 	if (*nr_effective >= nr_replicas)
 		return 1;
@@ -748,6 +753,7 @@ int bch2_bucket_alloc_set_trans(struct btree_trans *trans,
 
 		ob->data_type = data_type;
 
+		ob->allocated_by = 1;
 		if (add_new_bucket(c, ptrs, devs_may_alloc,
 				   nr_replicas, nr_effective,
 				   have_cache, flags, ob)) {
@@ -819,6 +825,7 @@ got_bucket:
 	ob->ec		= h->s;
 	ec_stripe_new_get(h->s, STRIPE_REF_io);
 
+	ob->allocated_by = 2;
 	ret = add_new_bucket(c, ptrs, devs_may_alloc,
 			     nr_replicas, nr_effective,
 			     have_cache, flags, ob);
@@ -829,11 +836,11 @@ out_put_head:
 
 /* Sector allocator */
 
-static bool want_bucket(struct bch_fs *c,
-			struct write_point *wp,
-			struct bch_devs_mask *devs_may_alloc,
-			bool *have_cache, bool ec,
-			struct open_bucket *ob)
+static bool __want_bucket(struct bch_fs *c,
+			  struct write_point *wp,
+			  struct bch_devs_mask *devs_may_alloc,
+			  bool *have_cache, bool ec,
+			  struct open_bucket *ob)
 {
 	struct bch_dev *ca = bch_dev_bkey_exists(c, ob->dev);
 
@@ -853,6 +860,22 @@ static bool want_bucket(struct bch_fs *c,
 	return true;
 }
 
+static bool want_bucket(struct bch_fs *c,
+			struct write_point *wp,
+			struct bch_devs_mask *devs_may_alloc,
+			bool *have_cache, bool ec,
+			struct open_bucket *ob)
+{
+	struct printbuf buf = PRINTBUF;
+	bool ret = __want_bucket(c, wp, devs_may_alloc, have_cache, ec, ob);
+
+	prt_printf(&buf, "want %u: ", ret);
+	bch2_open_bucket_to_text(&buf, c, ob);
+	pr_info("%s", buf.buf);
+	printbuf_exit(&buf);
+	return ret;
+}
+
 static int bucket_alloc_set_writepoint(struct bch_fs *c,
 				       struct open_buckets *ptrs,
 				       struct write_point *wp,
@@ -869,11 +892,12 @@ static int bucket_alloc_set_writepoint(struct bch_fs *c,
 
 	open_bucket_for_each(c, &wp->ptrs, ob, i) {
 		if (!ret && want_bucket(c, wp, devs_may_alloc,
-					have_cache, ec, ob))
+					have_cache, ec, ob)) {
+			ob->allocated_by = 3;
 			ret = add_new_bucket(c, ptrs, devs_may_alloc,
 				       nr_replicas, nr_effective,
 				       have_cache, flags, ob);
-		else
+		} else
 			ob_push(c, &ptrs_skip, ob);
 	}
 	wp->ptrs = ptrs_skip;
@@ -919,6 +943,7 @@ static int bucket_alloc_set_partial(struct bch_fs *c,
 					  i);
 			ob->on_partial_list = false;
 
+			ob->allocated_by = 4;
 			ret = add_new_bucket(c, ptrs, devs_may_alloc,
 					     nr_replicas, nr_effective,
 					     have_cache, flags, ob);
@@ -1348,6 +1373,8 @@ retry:
 	if (wp->data_type != BCH_DATA_user)
 		have_cache = true;
 
+	BUG_ON(wp->ptrs.nr > 1);
+
 	if (target && !(flags & BCH_WRITE_ONLY_SPECIFIED_DEVS)) {
 		ret = open_bucket_add_buckets(trans, &ptrs, wp, devs_have,
 					      target, erasure_code,
@@ -1383,6 +1410,7 @@ allocate_blocking:
 	}
 alloc_done:
 	BUG_ON(!ret && nr_effective < nr_replicas);
+	BUG_ON(ret && nr_effective >= nr_replicas);
 
 	if (erasure_code && !ec_open_bucket(c, &ptrs))
 		pr_debug("failed to get ec bucket: ret %u", ret);
@@ -1391,14 +1419,44 @@ alloc_done:
 	    nr_effective >= nr_replicas_required)
 		ret = 0;
 
-	if (ret)
+	if (ret && ptrs.nr) {
+		struct printbuf buf = PRINTBUF;
+
+		prt_str(&buf, "allocated:\n");
+		bch2_open_buckets_to_text(&buf, c, &ptrs);
+		prt_str(&buf, "freeing:\n");
+		bch2_open_buckets_to_text(&buf, c, &wp->ptrs);
+
+		prt_str(&buf, "allocating from: ");
+		bch2_opt_target_to_text(&buf, c, NULL, target);
+		panic("ret %s\n%s", bch2_err_str(ret), buf.buf);
+		printbuf_exit(&buf);
+	}
+
+	if (ret) {
+		BUG_ON(ptrs.nr);
 		goto err;
+	}
+
+	if (wp->ptrs.nr) {
+		struct printbuf buf = PRINTBUF;
+
+		prt_str(&buf, "allocated:\n");
+		bch2_open_buckets_to_text(&buf, c, &ptrs);
+		prt_str(&buf, "freeing:\n");
+		bch2_open_buckets_to_text(&buf, c, &wp->ptrs);
+
+		pr_info("%s", buf.buf);
+		printbuf_exit(&buf);
+	}
 
 	/* Free buckets we didn't use: */
 	open_bucket_for_each(c, &wp->ptrs, ob, i)
 		open_bucket_free_unused(c, ob);
 
 	wp->ptrs = ptrs;
+
+	BUG_ON(wp->ptrs.nr > 1);
 
 	wp->sectors_free = UINT_MAX;
 
@@ -1421,6 +1479,8 @@ err:
 
 	open_bucket_for_each(c, &wp->ptrs, ob, i)
 		EBUG_ON(!ob->sectors_free);
+
+	BUG_ON(wp->ptrs.nr > 1);
 
 	mutex_unlock(&wp->lock);
 
@@ -1519,20 +1579,31 @@ static void bch2_open_bucket_to_text(struct printbuf *out, struct bch_fs *c, str
 	unsigned data_type = ob->data_type;
 	barrier(); /* READ_ONCE() doesn't work on bitfields */
 
-	prt_printf(out, "%zu ref %u %s %u:%llu gen %u allocated %u/%u",
+	prt_printf(out, "%zu ref %u %s %u:%llu gen %u allocated %u/%u by %u",
 		   ob - c->open_buckets,
 		   atomic_read(&ob->pin),
 		   data_type < BCH_DATA_NR ? bch2_data_types[data_type] : "invalid data type",
 		   ob->dev, ob->bucket, ob->gen,
-		   ca->mi.bucket_size - ob->sectors_free, ca->mi.bucket_size);
+		   ca->mi.bucket_size - ob->sectors_free, ca->mi.bucket_size,
+		   ob->allocated_by);
 	if (ob->ec)
 		prt_printf(out, " ec idx %llu", ob->ec->idx);
 	if (ob->on_partial_list)
 		prt_str(out, " partial");
-	prt_newline(out);
 }
 
-void bch2_open_buckets_to_text(struct printbuf *out, struct bch_fs *c)
+void bch2_open_buckets_to_text(struct printbuf *out, struct bch_fs *c, struct open_buckets *obs)
+{
+	struct open_bucket *ob;
+	unsigned i;
+
+	open_bucket_for_each(c, obs, ob, i) {
+		bch2_open_bucket_to_text(out, c, ob);
+		prt_newline(out);
+	}
+}
+
+void bch2_fs_open_buckets_to_text(struct printbuf *out, struct bch_fs *c)
 {
 	struct open_bucket *ob;
 
@@ -1542,8 +1613,10 @@ void bch2_open_buckets_to_text(struct printbuf *out, struct bch_fs *c)
 	     ob < c->open_buckets + ARRAY_SIZE(c->open_buckets);
 	     ob++) {
 		spin_lock(&ob->lock);
-		if (ob->valid && !ob->on_partial_list)
+		if (ob->valid && !ob->on_partial_list) {
 			bch2_open_bucket_to_text(out, c, ob);
+			prt_newline(out);
+		}
 		spin_unlock(&ob->lock);
 	}
 
@@ -1557,9 +1630,11 @@ void bch2_open_buckets_partial_to_text(struct printbuf *out, struct bch_fs *c)
 	out->atomic++;
 	spin_lock(&c->freelist_lock);
 
-	for (i = 0; i < c->open_buckets_partial_nr; i++)
+	for (i = 0; i < c->open_buckets_partial_nr; i++) {
 		bch2_open_bucket_to_text(out, c,
 				c->open_buckets + c->open_buckets_partial[i]);
+		prt_newline(out);
+	}
 
 	spin_unlock(&c->freelist_lock);
 	--out->atomic;
@@ -1616,3 +1691,4 @@ void bch2_write_points_to_text(struct printbuf *out, struct bch_fs *c)
 	prt_str(out, "Btree write point\n");
 	bch2_write_point_to_text(out, c, &c->btree_write_point);
 }
+

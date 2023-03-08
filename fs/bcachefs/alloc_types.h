@@ -50,6 +50,8 @@ struct open_bucket {
 	open_bucket_idx_t	freelist;
 	open_bucket_idx_t	hash;
 
+	u8			allocated_by;
+
 	/*
 	 * When an open bucket has an ec_stripe attached, this is the index of
 	 * the block in the stripe this open_bucket corresponds to:

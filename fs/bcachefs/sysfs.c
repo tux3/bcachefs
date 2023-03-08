@@ -438,7 +438,7 @@ SHOW(bch2_fs)
 		bch2_stripes_heap_to_text(out, c);
 
 	if (attr == &sysfs_open_buckets)
-		bch2_open_buckets_to_text(out, c);
+		bch2_fs_open_buckets_to_text(out, c);
 
 	if (attr == &sysfs_open_buckets_partial)
 		bch2_open_buckets_partial_to_text(out, c);
