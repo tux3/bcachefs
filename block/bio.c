@@ -1170,13 +1170,13 @@ bool bio_add_folio(struct bio *bio, struct folio *folio, size_t len,
 
 void __bio_release_pages(struct bio *bio, bool mark_dirty)
 {
-	struct bvec_iter_all iter_all;
-	struct bio_vec *bvec;
+	struct bvec_iter_all iter;
+	struct bio_vec bvec;
 
-	bio_for_each_segment_all(bvec, bio, iter_all) {
-		if (mark_dirty && !PageCompound(bvec->bv_page))
-			set_page_dirty_lock(bvec->bv_page);
-		put_page(bvec->bv_page);
+	bio_for_each_segment_all(bvec, bio, iter) {
+		if (mark_dirty && !PageCompound(bvec.bv_page))
+			set_page_dirty_lock(bvec.bv_page);
+		put_page(bvec.bv_page);
 	}
 }
 EXPORT_SYMBOL_GPL(__bio_release_pages);
@@ -1401,6 +1401,11 @@ void __bio_advance(struct bio *bio, unsigned bytes)
 }
 EXPORT_SYMBOL(__bio_advance);
 
+void bio_iter_all_advance_warning(void)
+{
+	WARN(true, "advanced past end of bio");
+}
+
 void bio_copy_data_iter(struct bio *dst, struct bvec_iter *dst_iter,
 			struct bio *src, struct bvec_iter *src_iter)
 {
@@ -1441,11 +1446,11 @@ EXPORT_SYMBOL(bio_copy_data);
 
 void bio_free_pages(struct bio *bio)
 {
-	struct bio_vec *bvec;
-	struct bvec_iter_all iter_all;
+	struct bvec_iter_all iter;
+	struct bio_vec bvec;
 
-	bio_for_each_segment_all(bvec, bio, iter_all)
-		__free_page(bvec->bv_page);
+	bio_for_each_segment_all(bvec, bio, iter)
+		__free_page(bvec.bv_page);
 }
 EXPORT_SYMBOL(bio_free_pages);
 
@@ -1480,12 +1485,12 @@ EXPORT_SYMBOL(bio_free_pages);
  */
 void bio_set_pages_dirty(struct bio *bio)
 {
-	struct bio_vec *bvec;
-	struct bvec_iter_all iter_all;
+	struct bvec_iter_all iter;
+	struct bio_vec bvec;
 
-	bio_for_each_segment_all(bvec, bio, iter_all) {
-		if (!PageCompound(bvec->bv_page))
-			set_page_dirty_lock(bvec->bv_page);
+	bio_for_each_segment_all(bvec, bio, iter) {
+		if (!PageCompound(bvec.bv_page))
+			set_page_dirty_lock(bvec.bv_page);
 	}
 }
 
@@ -1528,12 +1533,12 @@ static void bio_dirty_fn(struct work_struct *work)
 
 void bio_check_pages_dirty(struct bio *bio)
 {
-	struct bio_vec *bvec;
+	struct bvec_iter_all iter;
+	struct bio_vec bvec;
 	unsigned long flags;
-	struct bvec_iter_all iter_all;
 
-	bio_for_each_segment_all(bvec, bio, iter_all) {
-		if (!PageDirty(bvec->bv_page) && !PageCompound(bvec->bv_page))
+	bio_for_each_segment_all(bvec, bio, iter) {
+		if (!PageDirty(bvec.bv_page) && !PageCompound(bvec.bv_page))
 			goto defer;
 	}
 
