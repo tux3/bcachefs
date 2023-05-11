@@ -288,6 +288,7 @@ static bool do_six_trylock(struct six_lock *lock, enum six_lock_type type, bool 
 bool six_trylock_ip(struct six_lock *lock, enum six_lock_type type,
 		    struct lockdep_map *nest, unsigned long ip)
 {
+	BUG_ON(!nest);
 	if (!do_six_trylock(lock, type, true))
 		return false;
 
@@ -595,6 +596,8 @@ int six_lock_ip_waiter(struct six_lock *lock, enum six_lock_type type,
 		: NULL;
 	int ret;
 
+	BUG_ON(!should_sleep_fn);
+
 	wait->start_time = 0;
 
 	if (type != SIX_LOCK_write)
@@ -767,9 +770,10 @@ EXPORT_SYMBOL_GPL(six_trylock_convert);
  * unlocked.
  */
 void six_lock_increment_nest(struct six_lock *lock, enum six_lock_type type,
-			     struct lockdep_map *nest_lock)
+			     struct lockdep_map *nest)
 {
-	six_acquire(&lock->dep_map, true, type == SIX_LOCK_read, nest_lock, _RET_IP_);
+	BUG_ON(!nest);
+	six_acquire(&lock->dep_map, true, type == SIX_LOCK_read, nest, _RET_IP_);
 
 	/* XXX: assert already locked, and that we don't overflow: */
 

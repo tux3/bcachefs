@@ -651,8 +651,8 @@ struct btree *bch2_btree_node_mem_alloc(struct btree_trans *trans, bool pcpu_rea
 
 	bch2_btree_lock_init(&b->c, pcpu_read_locks ? SIX_LOCK_INIT_PCPU : 0);
 
-	BUG_ON(!six_trylock_intent(&b->c.lock));
-	BUG_ON(!six_trylock_write(&b->c.lock));
+	BUG_ON(!btree_node_trylock(trans, &b->c, SIX_LOCK_intent, _THIS_IP_));
+	BUG_ON(!btree_node_trylock(trans, &b->c, SIX_LOCK_write, _THIS_IP_));
 got_node:
 
 	/*
