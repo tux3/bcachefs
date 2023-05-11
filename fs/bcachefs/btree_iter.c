@@ -688,7 +688,8 @@ void bch2_trans_node_add(struct btree_trans *trans, struct btree *b)
 
 			if (t != BTREE_NODE_UNLOCKED) {
 				btree_node_unlock(trans, path, b->c.level);
-				six_lock_increment(&b->c.lock, (enum six_lock_type) t);
+				six_lock_increment_nest(&b->c.lock, (enum six_lock_type) t,
+							&trans->locking_wait.acquire_ctx);
 				mark_btree_node_locked(trans, path, b->c.level, (enum six_lock_type) t);
 			}
 
@@ -1180,7 +1181,8 @@ static inline void btree_path_copy(struct btree_trans *trans, struct btree_path 
 		unsigned t = btree_node_locked_type(dst, i);
 
 		if (t != BTREE_NODE_UNLOCKED)
-			six_lock_increment(&dst->l[i].b->c.lock, t);
+			six_lock_increment_nest(&dst->l[i].b->c.lock, t,
+					   &trans->locking_wait.acquire_ctx);
 	}
 }
 
@@ -2941,9 +2943,9 @@ void __bch2_trans_init(struct btree_trans *trans, struct bch_fs *c, unsigned fn_
 		? bch2_btree_transaction_fns[fn_idx] : NULL;
 	trans->last_begin_time	= local_clock();
 	trans->fn_idx		= fn_idx;
-	trans->locking_wait.task = current;
 	trans->journal_replay_not_finished =
 		!test_bit(JOURNAL_REPLAY_DONE, &c->journal.flags);
+	six_lock_waiter_init(&trans->locking_wait);
 	closure_init_stack(&trans->ref);
 
 	bch2_trans_alloc_paths(trans, c);
@@ -3042,6 +3044,8 @@ void bch2_trans_exit(struct btree_trans *trans)
 	trans->nr_updates		= 0;
 
 	check_btree_paths_leaked(trans);
+
+	six_lock_waiter_exit(&trans->locking_wait);
 
 	srcu_read_unlock(&c->btree_trans_barrier, trans->srcu_idx);
 

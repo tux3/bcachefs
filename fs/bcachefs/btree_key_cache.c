@@ -52,9 +52,9 @@ bch2_btree_key_cache_find(struct bch_fs *c, enum btree_id btree_id, struct bpos 
 				      bch2_btree_key_cache_params);
 }
 
-static bool bkey_cached_lock_for_evict(struct bkey_cached *ck)
+static bool bkey_cached_lock_for_evict(struct btree_trans *trans, struct bkey_cached *ck)
 {
-	if (!six_trylock_intent(&ck->c.lock))
+	if (!btree_node_trylock(NULL, &ck->c, SIX_LOCK_intent, _THIS_IP_))
 		return false;
 
 	if (test_bit(BKEY_CACHED_DIRTY, &ck->flags)) {
@@ -62,7 +62,7 @@ static bool bkey_cached_lock_for_evict(struct bkey_cached *ck)
 		return false;
 	}
 
-	if (!six_trylock_write(&ck->c.lock)) {
+	if (!btree_node_trylock(NULL, &ck->c, SIX_LOCK_write, _THIS_IP_)) {
 		six_unlock_intent(&ck->c.lock);
 		return false;
 	}
@@ -279,35 +279,37 @@ bkey_cached_alloc(struct btree_trans *trans, struct btree_path *path,
 	bch2_btree_lock_init(&ck->c, pcpu_readers ? SIX_LOCK_INIT_PCPU : 0);
 
 	ck->c.cached = true;
-	BUG_ON(!six_trylock_intent(&ck->c.lock));
-	BUG_ON(!six_trylock_write(&ck->c.lock));
+	BUG_ON(!btree_node_trylock(trans, &ck->c, SIX_LOCK_intent, _THIS_IP_));
+	BUG_ON(!btree_node_trylock(trans, &ck->c, SIX_LOCK_write, _THIS_IP_));
 	*was_new = true;
 	return ck;
 }
 
 static struct bkey_cached *
-bkey_cached_reuse(struct btree_key_cache *c)
+bkey_cached_reuse(struct btree_trans *trans)
 {
+	struct bch_fs *c = trans->c;
+	struct btree_key_cache *bc = &c->btree_key_cache;
 	struct bucket_table *tbl;
 	struct rhash_head *pos;
 	struct bkey_cached *ck;
 	unsigned i;
 
-	mutex_lock(&c->lock);
+	mutex_lock(&bc->lock);
 	rcu_read_lock();
-	tbl = rht_dereference_rcu(c->table.tbl, &c->table);
+	tbl = rht_dereference_rcu(bc->table.tbl, &bc->table);
 	for (i = 0; i < tbl->size; i++)
 		rht_for_each_entry_rcu(ck, pos, tbl, i, hash) {
 			if (!test_bit(BKEY_CACHED_DIRTY, &ck->flags) &&
-			    bkey_cached_lock_for_evict(ck)) {
-				bkey_cached_evict(c, ck);
+			    bkey_cached_lock_for_evict(trans, ck)) {
+				bkey_cached_evict(bc, ck);
 				goto out;
 			}
 		}
 	ck = NULL;
 out:
 	rcu_read_unlock();
-	mutex_unlock(&c->lock);
+	mutex_unlock(&bc->lock);
 	return ck;
 }
 
@@ -324,7 +326,7 @@ btree_key_cache_create(struct btree_trans *trans, struct btree_path *path)
 		return ck;
 
 	if (unlikely(!ck)) {
-		ck = bkey_cached_reuse(bc);
+		ck = bkey_cached_reuse(trans);
 		if (unlikely(!ck)) {
 			bch_err(c, "error allocating memory for key cache item, btree %s",
 				bch2_btree_ids[path->btree_id]);
@@ -906,7 +908,7 @@ static unsigned long bch2_btree_key_cache_scan(struct shrinker *shrink,
 
 			if (test_bit(BKEY_CACHED_ACCESSED, &ck->flags))
 				clear_bit(BKEY_CACHED_ACCESSED, &ck->flags);
-			else if (bkey_cached_lock_for_evict(ck)) {
+			else if (bkey_cached_lock_for_evict(NULL, ck)) {
 				bkey_cached_evict(bc, ck);
 				bkey_cached_free(bc, ck);
 			}

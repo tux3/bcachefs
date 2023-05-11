@@ -252,11 +252,22 @@ static inline bool btree_node_lock_increment(struct btree_trans *trans,
 	trans_for_each_path(trans, path)
 		if (&path->l[level].b->c == b &&
 		    btree_node_locked_type(path, level) >= want) {
-			six_lock_increment(&b->lock, (enum six_lock_type) want);
+			six_lock_increment(&b->lock, (enum six_lock_type) want,
+					   &trans->locking_wait.acquire_ctx);
 			return true;
 		}
 
 	return false;
+}
+
+static inline bool btree_node_trylock(struct btree_trans *trans,
+			struct btree_bkey_cached_common *b,
+			enum six_lock_type type,
+			unsigned long ip)
+{
+	return likely(six_trylock_ip(&b->lock, type, trans
+				? &trans->locking_wait.acquire_ctx
+				: NULL, ip));
 }
 
 static inline int btree_node_lock(struct btree_trans *trans,
@@ -271,7 +282,7 @@ static inline int btree_node_lock(struct btree_trans *trans,
 	EBUG_ON(level >= BTREE_MAX_DEPTH);
 	EBUG_ON(!(trans->paths_allocated & (1ULL << path->idx)));
 
-	if (likely(six_trylock_type(&b->lock, type)) ||
+	if (btree_node_trylock(trans, b, type, ip) ||
 	    btree_node_lock_increment(trans, b, level, (enum btree_node_locked_type) type) ||
 	    !(ret = btree_node_lock_nopath(trans, b, type, btree_path_ip_allocated(path)))) {
 #ifdef CONFIG_BCACHEFS_LOCK_TIME_STATS
@@ -303,7 +314,7 @@ static inline int __btree_node_lock_write(struct btree_trans *trans,
 	 */
 	mark_btree_node_locked_noreset(path, b->level, BTREE_NODE_WRITE_LOCKED);
 
-	ret = likely(six_trylock_write(&b->lock))
+	ret = btree_node_trylock(trans, b, SIX_LOCK_write, _THIS_IP_)
 		? 0
 		: __bch2_btree_node_lock_write(trans, path, b, lock_may_not_fail);
 

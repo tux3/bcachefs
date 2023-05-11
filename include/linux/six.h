@@ -149,6 +149,9 @@ struct six_lock {
 };
 
 struct six_lock_waiter {
+#ifdef CONFIG_DEBUG_LOCK_ALLOC
+	struct lockdep_map	acquire_ctx;
+#endif
 	struct list_head	list;
 	struct task_struct	*task;
 	enum six_lock_type	lock_want;
@@ -179,6 +182,31 @@ do {									\
 	__six_lock_init((lock), #lock, &__key, flags);			\
 } while (0)
 
+static __always_inline void six_lock_waiter_exit(struct six_lock_waiter *wait)
+{
+#ifdef CONFIG_DEBUG_LOCK_ALLOC
+	lock_release(&wait->acquire_ctx, _THIS_IP_);
+#endif
+}
+
+static __always_inline void __six_lock_waiter_init(struct six_lock_waiter *wait,
+					    const char *name,
+					    struct lock_class_key *key)
+{
+	wait->task = current;
+#ifdef CONFIG_DEBUG_LOCK_ALLOC
+	lockdep_init_map(&wait->acquire_ctx, name, key, 0);
+	lock_acquire(&wait->acquire_ctx, 0, false, 0, 1, NULL, _THIS_IP_);
+#endif
+}
+
+#define six_lock_waiter_init(wait)					\
+do {									\
+	static struct lock_class_key __key;				\
+									\
+	__six_lock_waiter_init((wait), #wait, &__key);			\
+} while (0)
+
 /**
  * six_lock_seq - obtain current lock sequence number
  * @lock:	six_lock to obtain sequence number for
@@ -195,7 +223,8 @@ static inline u32 six_lock_seq(const struct six_lock *lock)
 	return lock->seq;
 }
 
-bool six_trylock_ip(struct six_lock *lock, enum six_lock_type type, unsigned long ip);
+bool six_trylock_ip(struct six_lock *lock, enum six_lock_type type,
+		    struct lockdep_map *nest, unsigned long ip);
 
 /**
  * six_trylock_type - attempt to take a six lock without blocking
@@ -206,7 +235,7 @@ bool six_trylock_ip(struct six_lock *lock, enum six_lock_type type, unsigned lon
  */
 static inline bool six_trylock_type(struct six_lock *lock, enum six_lock_type type)
 {
-	return six_trylock_ip(lock, type, _THIS_IP_);
+	return six_trylock_ip(lock, type, NULL, _THIS_IP_);
 }
 
 int six_lock_ip_waiter(struct six_lock *lock, enum six_lock_type type,
@@ -273,8 +302,8 @@ static inline int six_lock_type(struct six_lock *lock, enum six_lock_type type,
 	return six_lock_ip_waiter(lock, type, &wait, should_sleep_fn, p, _THIS_IP_);
 }
 
-bool six_relock_ip(struct six_lock *lock, enum six_lock_type type,
-		   unsigned seq, unsigned long ip);
+bool six_relock_ip(struct six_lock *lock, enum six_lock_type type, unsigned seq,
+		   struct lockdep_map *nest, unsigned long ip);
 
 /**
  * six_relock_type - attempt to re-take a lock that was held previously
@@ -288,7 +317,7 @@ bool six_relock_ip(struct six_lock *lock, enum six_lock_type type,
 static inline bool six_relock_type(struct six_lock *lock, enum six_lock_type type,
 				   unsigned seq)
 {
-	return six_relock_ip(lock, type, seq, _THIS_IP_);
+	return six_relock_ip(lock, type, seq, NULL, _THIS_IP_);
 }
 
 void six_unlock_ip(struct six_lock *lock, enum six_lock_type type, unsigned long ip);
@@ -313,14 +342,15 @@ static inline void six_unlock_type(struct six_lock *lock, enum six_lock_type typ
 }
 
 #define __SIX_LOCK(type)						\
-static inline bool six_trylock_ip_##type(struct six_lock *lock, unsigned long ip)\
+static inline bool six_trylock_ip_##type(struct six_lock *lock,		\
+			struct lockdep_map *nest, unsigned long ip)	\
 {									\
-	return six_trylock_ip(lock, SIX_LOCK_##type, ip);		\
+	return six_trylock_ip(lock, SIX_LOCK_##type, nest, ip);		\
 }									\
 									\
 static inline bool six_trylock_##type(struct six_lock *lock)		\
 {									\
-	return six_trylock_ip(lock, SIX_LOCK_##type, _THIS_IP_);	\
+	return six_trylock_ip(lock, SIX_LOCK_##type, NULL, _THIS_IP_);	\
 }									\
 									\
 static inline int six_lock_ip_waiter_##type(struct six_lock *lock,	\
@@ -338,14 +368,15 @@ static inline int six_lock_ip_##type(struct six_lock *lock,		\
 	return six_lock_ip(lock, SIX_LOCK_##type, should_sleep_fn, p, ip);\
 }									\
 									\
-static inline bool six_relock_ip_##type(struct six_lock *lock, u32 seq, unsigned long ip)\
+static inline bool six_relock_ip_##type(struct six_lock *lock, u32 seq,	\
+			struct lockdep_map *nest, unsigned long ip)	\
 {									\
-	return six_relock_ip(lock, SIX_LOCK_##type, seq, ip);		\
+	return six_relock_ip(lock, SIX_LOCK_##type, seq, nest, ip);	\
 }									\
 									\
 static inline bool six_relock_##type(struct six_lock *lock, u32 seq)	\
 {									\
-	return six_relock_ip(lock, SIX_LOCK_##type, seq, _THIS_IP_);	\
+	return six_relock_ip(lock, SIX_LOCK_##type, seq, NULL, _THIS_IP_);\
 }									\
 									\
 static inline int six_lock_##type(struct six_lock *lock,		\
@@ -374,7 +405,12 @@ bool six_lock_tryupgrade(struct six_lock *);
 bool six_trylock_convert(struct six_lock *, enum six_lock_type,
 			 enum six_lock_type);
 
-void six_lock_increment(struct six_lock *, enum six_lock_type);
+void six_lock_increment_nest(struct six_lock *, enum six_lock_type, struct lockdep_map *);
+
+static inline void six_lock_increment(struct six_lock *lock, enum six_lock_type type)
+{
+	six_lock_increment_nest(lock, type, NULL);
+}
 
 void six_lock_wakeup_all(struct six_lock *);
 

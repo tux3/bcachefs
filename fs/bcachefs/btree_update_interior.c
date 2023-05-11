@@ -1512,12 +1512,14 @@ static int btree_split(struct btree_update *as, struct btree_trans *trans,
 		six_unlock_write(&n1->c.lock);
 
 		path1 = get_unlocked_mut_path(trans, path->btree_id, n1->c.level, n1->key.k.p);
-		six_lock_increment(&n1->c.lock, SIX_LOCK_intent);
+		six_lock_increment_nest(&n1->c.lock, SIX_LOCK_intent,
+					&trans->locking_wait.acquire_ctx);
 		mark_btree_node_locked(trans, path1, n1->c.level, SIX_LOCK_intent);
 		bch2_btree_path_level_init(trans, path1, n1);
 
 		path2 = get_unlocked_mut_path(trans, path->btree_id, n2->c.level, n2->key.k.p);
-		six_lock_increment(&n2->c.lock, SIX_LOCK_intent);
+		six_lock_increment_nest(&n2->c.lock, SIX_LOCK_intent,
+					&trans->locking_wait.acquire_ctx);
 		mark_btree_node_locked(trans, path2, n2->c.level, SIX_LOCK_intent);
 		bch2_btree_path_level_init(trans, path2, n2);
 
@@ -1538,7 +1540,8 @@ static int btree_split(struct btree_update *as, struct btree_trans *trans,
 
 			path2->locks_want++;
 			BUG_ON(btree_node_locked(path2, n3->c.level));
-			six_lock_increment(&n3->c.lock, SIX_LOCK_intent);
+			six_lock_increment_nest(&n3->c.lock, SIX_LOCK_intent,
+						&trans->locking_wait.acquire_ctx);
 			mark_btree_node_locked(trans, path2, n3->c.level, SIX_LOCK_intent);
 			bch2_btree_path_level_init(trans, path2, n3);
 
@@ -1562,7 +1565,8 @@ static int btree_split(struct btree_update *as, struct btree_trans *trans,
 		six_unlock_write(&n1->c.lock);
 
 		path1 = get_unlocked_mut_path(trans, path->btree_id, n1->c.level, n1->key.k.p);
-		six_lock_increment(&n1->c.lock, SIX_LOCK_intent);
+		six_lock_increment_nest(&n1->c.lock, SIX_LOCK_intent,
+					&trans->locking_wait.acquire_ctx);
 		mark_btree_node_locked(trans, path1, n1->c.level, SIX_LOCK_intent);
 		bch2_btree_path_level_init(trans, path1, n1);
 
@@ -1889,7 +1893,8 @@ int __bch2_foreground_maybe_merge(struct btree_trans *trans,
 	six_unlock_write(&n->c.lock);
 
 	new_path = get_unlocked_mut_path(trans, path->btree_id, n->c.level, n->key.k.p);
-	six_lock_increment(&n->c.lock, SIX_LOCK_intent);
+	six_lock_increment_nest(&n->c.lock, SIX_LOCK_intent,
+				&trans->locking_wait.acquire_ctx);
 	mark_btree_node_locked(trans, new_path, n->c.level, SIX_LOCK_intent);
 	bch2_btree_path_level_init(trans, new_path, n);
 
@@ -1966,7 +1971,8 @@ int bch2_btree_node_rewrite(struct btree_trans *trans,
 	six_unlock_write(&n->c.lock);
 
 	new_path = get_unlocked_mut_path(trans, iter->btree_id, n->c.level, n->key.k.p);
-	six_lock_increment(&n->c.lock, SIX_LOCK_intent);
+	six_lock_increment_nest(&n->c.lock, SIX_LOCK_intent,
+				&trans->locking_wait.acquire_ctx);
 	mark_btree_node_locked(trans, new_path, n->c.level, SIX_LOCK_intent);
 	bch2_btree_path_level_init(trans, new_path, n);
 
