@@ -66,6 +66,7 @@ static void btree_node_data_free(struct bch_fs *c, struct btree *b)
 
 	clear_btree_node_just_written(b);
 
+	jit_free(b->unpack);
 	kvpfree(b->data, btree_bytes(c));
 	b->data = NULL;
 #ifdef __KERNEL__
