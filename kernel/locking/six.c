@@ -892,6 +892,7 @@ void __six_lock_init(struct six_lock *lock, const char *name,
 	atomic_set(&lock->state, 0);
 	raw_spin_lock_init(&lock->wait_lock);
 	INIT_LIST_HEAD(&lock->wait_list);
+
 #ifdef CONFIG_DEBUG_LOCK_ALLOC
 	debug_check_no_locks_freed((void *) lock, sizeof(*lock));
 	lockdep_init_map(&lock->dep_map, name, key, 0);
@@ -902,7 +903,7 @@ void __six_lock_init(struct six_lock *lock, const char *name,
 	 * userspace:
 	 */
 #ifdef __KERNEL__
-	if (flags & SIX_LOCK_INIT_PCPU) {
+	if (true) {
 		/*
 		 * We don't return an error here on memory allocation failure
 		 * since percpu is an optimization, and locks will work with the
