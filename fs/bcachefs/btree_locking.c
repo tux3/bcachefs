@@ -141,10 +141,27 @@ static bool lock_graph_remove_non_waiters(struct lock_graph *g)
 	return false;
 }
 
+static void trace_would_deadlock(struct lock_graph *g, struct btree_trans *trans)
+{
+	struct bch_fs *c = trans->c;
+
+	this_cpu_inc(c->counters[BCH_COUNTER_trans_restart_would_deadlock]);
+
+	if (trace_trans_restart_would_deadlock_enabled()) {
+		struct printbuf buf = PRINTBUF;
+
+		buf.atomic++;
+		print_cycle(&buf, g);
+
+		trace_trans_restart_would_deadlock(trans, buf.buf);
+		printbuf_exit(&buf);
+	}
+}
+
 static int abort_lock(struct lock_graph *g, struct trans_waiting_for_lock *i)
 {
 	if (i == g->g) {
-		trace_and_count(i->trans->c, trans_restart_would_deadlock, i->trans, _RET_IP_);
+		trace_would_deadlock(g, i->trans);
 		return btree_trans_restart(i->trans, BCH_ERR_transaction_restart_would_deadlock);
 	} else {
 		i->trans->lock_must_abort = true;
@@ -269,7 +286,7 @@ int bch2_check_for_deadlock(struct btree_trans *trans, struct printbuf *cycle)
 		if (cycle)
 			return -1;
 
-		trace_and_count(trans->c, trans_restart_would_deadlock, trans, _RET_IP_);
+		trace_would_deadlock(&g, trans);
 		return btree_trans_restart(trans, BCH_ERR_transaction_restart_would_deadlock);
 	}
 

@@ -1101,10 +1101,23 @@ DEFINE_EVENT(transaction_restart_iter,	trans_restart_memory_allocation_failure,
 	TP_ARGS(trans, caller_ip, path)
 );
 
-DEFINE_EVENT(transaction_event,	trans_restart_would_deadlock,
+TRACE_EVENT(trans_restart_would_deadlock,
 	TP_PROTO(struct btree_trans *trans,
-		 unsigned long caller_ip),
-	TP_ARGS(trans, caller_ip)
+		 const char *paths),
+	TP_ARGS(trans, paths),
+
+	TP_STRUCT__entry(
+		__array(char,			trans_fn, 32	)
+		__string(paths,			paths		)
+		TRACE_BPOS_entries(pos)
+	),
+
+	TP_fast_assign(
+		strscpy(__entry->trans_fn, trans->fn, sizeof(__entry->trans_fn));
+		__assign_str(paths, paths);
+	),
+
+	TP_printk("%s:\n%s", __entry->trans_fn, __get_str(paths))
 );
 
 DEFINE_EVENT(transaction_event,	trans_restart_would_deadlock_recursion_limit,
