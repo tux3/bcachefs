@@ -164,7 +164,6 @@ void __bch2_i_sectors_acct(struct bch_fs *c, struct bch_inode_info *inode,
 #endif
 }
 
-
 /* fsync: */
 
 /*
