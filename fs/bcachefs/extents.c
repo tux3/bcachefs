@@ -1281,6 +1281,99 @@ void bch2_ptr_swab(struct bkey_s k)
 	}
 }
 
+const struct bch_extent_rebalance *bch2_bkey_needs_rebalance(struct bkey_s_c k)
+{
+	struct bkey_ptrs_c ptrs = bch2_bkey_ptrs_c(k);
+	const union bch_extent_entry *entry;
+
+	bkey_extent_entry_for_each(ptrs, entry)
+		if (__extent_entry_type(entry) == BCH_EXTENT_ENTRY_rebalance)
+			return &entry->rebalance;
+
+	return NULL;
+}
+
+static bool __bkey_needs_rebalance(struct bch_fs *c, struct bkey_s_c k,
+				   enum bch_compression_type compression,
+				   unsigned target)
+{
+	struct bkey_ptrs_c ptrs = bch2_bkey_ptrs_c(k);
+	const union bch_extent_entry *entry;
+	struct extent_ptr_decoded p;
+	bool needs_move = false, needs_compress = false, incompressible = false;
+
+	if (!compression && !target)
+		return false;
+
+	bkey_for_each_ptr_decode(k.k, ptrs, p, entry) {
+		if (p.ptr.cached)
+			continue;
+
+		if (p.crc.compression_type == BCH_COMPRESSION_TYPE_incompressible)
+			incompressible = true;
+		else if (compression && p.crc.compression_type != compression)
+			needs_compress = true;
+
+		if (target && !bch2_dev_in_target(c, p.ptr.dev, target))
+			needs_move = true;
+	}
+
+	return (needs_move && bch2_target_accepts_data(c, BCH_DATA_user, target)) ||
+		(needs_compress && !incompressible);
+}
+
+void bch2_bkey_set_needs_rebalance(struct bch_fs *c, struct bkey_s k,
+				   enum bch_compression_opts compression_opt,
+				   unsigned target)
+{
+	struct bch_extent_rebalance *r;
+	enum bch_compression_type compression = bch2_compression_opt_to_type[compression_opt];
+	bool needs_rebalance;
+
+	if (k.k->type != KEY_TYPE_extent &&
+	    k.k->type != KEY_TYPE_reflink_v)
+		return;
+
+	/* get existing rebalance entry: */
+	r = (struct bch_extent_rebalance *) bch2_bkey_needs_rebalance(k.s_c);
+	if (r) {
+		if (k.k->type == KEY_TYPE_reflink_v) {
+			/*
+			 * indirect extents: existing options take precedence,
+			 * so that we don't move extents back and forth if
+			 * they're referenced by different inodes with different
+			 * options:
+			 */
+			if (r->compression)
+				compression = r->compression;
+			if (r->target)
+				target = r->target;
+		}
+
+		r->compression	= compression;
+		r->target	= target;
+	}
+
+	needs_rebalance = __bkey_needs_rebalance(c, k.s_c, compression, target);
+
+	if (needs_rebalance && !r) {
+		union bch_extent_entry *new = bkey_val_end(k);
+
+		new->type = 1 << BCH_EXTENT_ENTRY_rebalance;
+		new->rebalance.compression	= compression;
+		new->rebalance.target		= target;
+		new->rebalance.unused		= 0;
+		k.k->u64s += extent_entry_u64s(new);
+	} else if (!needs_rebalance && r && k.k->type != KEY_TYPE_reflink_v) {
+		/*
+		 * For indirect extents, don't delete the rebalance entry when
+		 * we're finished so that we know we specifically moved it or
+		 * compressed it to its current location/compression type
+		 */
+		extent_entry_drop(k, (union bch_extent_entry *) r);
+	}
+}
+
 /* Generic extent code: */
 
 int bch2_cut_front_s(struct bpos where, struct bkey_s k)

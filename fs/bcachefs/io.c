@@ -593,6 +593,12 @@ static int bch2_write_index_default(struct bch_write_op *op)
 		k = bch2_keylist_front(keys);
 		bch2_bkey_buf_copy(&sk, c, k);
 
+		if (op->opts.background_compression ||
+		    op->opts.background_target)
+			bch2_bkey_set_needs_rebalance(c, bkey_i_to_s(sk.k),
+					op->opts.background_compression,
+					op->opts.background_target);
+
 		ret = bch2_subvolume_get_snapshot(&trans, inum.subvol,
 						  &sk.k->k.p.snapshot);
 		if (bch2_err_matches(ret, BCH_ERR_transaction_restart))

@@ -1638,7 +1638,9 @@ struct bch_sb_field_journal_seq_blacklist {
 	x(deleted_inodes,		BCH_VERSION(1,  2),		\
 	  BIT_ULL(BCH_RECOVERY_PASS_check_inodes))			\
 	x(inode_depth,			BCH_VERSION(1,  3),		\
-	  0)
+	  0)								\
+	x(rebalance_work,		BCH_VERSION(1,  4),		\
+	  RECOVERY_PASS_ALL_FSCK)					\
 
 enum bcachefs_metadata_version {
 	bcachefs_metadata_version_min = 9,
@@ -1648,7 +1650,7 @@ enum bcachefs_metadata_version {
 	bcachefs_metadata_version_max
 };
 
-static const unsigned bcachefs_metadata_required_upgrade_below = bcachefs_metadata_version_major_minor;
+static const unsigned bcachefs_metadata_required_upgrade_below = bcachefs_metadata_version_rebalance_work;
 
 #define bcachefs_metadata_version_current	(bcachefs_metadata_version_max - 1)
 
@@ -2262,6 +2264,8 @@ enum btree_id_flags {
 	x(snapshot_trees,	15,	0,					\
 	  BIT_ULL(KEY_TYPE_snapshot_tree))					\
 	x(deleted_inodes,	16,	BTREE_ID_SNAPSHOTS,			\
+	  BIT_ULL(KEY_TYPE_set))						\
+	x(rebalance_work,	17,	BTREE_ID_SNAPSHOTS,			\
 	  BIT_ULL(KEY_TYPE_set))
 
 enum btree_id {

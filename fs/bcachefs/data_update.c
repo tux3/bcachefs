@@ -233,6 +233,9 @@ restart_drop_extra_replicas:
 
 		bch2_bkey_narrow_crcs(insert, (struct bch_extent_crc_unpacked) { 0 });
 		bch2_extent_normalize(c, bkey_i_to_s(insert));
+		bch2_bkey_set_needs_rebalance(c, bkey_i_to_s(insert),
+					      op->opts.background_compression,
+					      op->opts.background_target);
 
 		ret = bch2_sum_sector_overwrites(trans, &iter, insert,
 						 &should_check_enospc,
@@ -255,11 +258,8 @@ restart_drop_extra_replicas:
 		ret =   bch2_insert_snapshot_whiteouts(trans, m->btree_id,
 						k.k->p, bkey_start_pos(&insert->k)) ?:
 			bch2_insert_snapshot_whiteouts(trans, m->btree_id,
-						k.k->p, insert->k.p);
-		if (ret)
-			goto err;
-
-		ret   = bch2_trans_update(trans, &iter, insert,
+						k.k->p, insert->k.p) ?:
+			bch2_trans_update(trans, &iter, insert,
 				BTREE_UPDATE_INTERNAL_SNAPSHOT_NODE) ?:
 			bch2_trans_commit(trans, &op->res,
 				NULL,

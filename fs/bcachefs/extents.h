@@ -692,6 +692,10 @@ int bch2_bkey_ptrs_invalid(const struct bch_fs *, struct bkey_s_c,
 
 void bch2_ptr_swab(struct bkey_s);
 
+const struct bch_extent_rebalance *bch2_bkey_needs_rebalance(struct bkey_s_c);
+void bch2_bkey_set_needs_rebalance(struct bch_fs *, struct bkey_s,
+				   enum bch_compression_opts, unsigned);
+
 /* Generic extent code: */
 
 enum bch_extent_overlap {

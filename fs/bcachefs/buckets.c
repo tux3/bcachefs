@@ -1537,6 +1537,25 @@ int bch2_trans_mark_extent(struct btree_trans *trans,
 			   struct bkey_s_c old, struct bkey_i *new,
 			   unsigned flags)
 {
+	bool old_needs_rebalance = bch2_bkey_needs_rebalance(old);
+	bool new_needs_rebalance = bch2_bkey_needs_rebalance(bkey_i_to_s_c(new));
+
+	if (old_needs_rebalance != new_needs_rebalance) {
+		struct bkey_i *work = bch2_trans_kmalloc_nomemzero(trans, sizeof(*work));
+		int ret = PTR_ERR_OR_ZERO(work);
+
+		if (ret)
+			return ret;
+
+		bkey_init(&work->k);
+		work->k.p = new->k.p;
+		work->k.type = new_needs_rebalance ? KEY_TYPE_set : KEY_TYPE_deleted;
+
+		ret = bch2_trans_update_buffered(trans, BTREE_ID_rebalance_work, work, false);
+		if (ret)
+			return ret;
+	}
+
 	return trigger_run_insert_then_overwrite(__trans_mark_extent, trans, btree_id, level, old, new, flags);
 }
 
