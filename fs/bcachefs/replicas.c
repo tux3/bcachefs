@@ -997,10 +997,7 @@ bool bch2_have_enough_devs(struct bch_fs *c, struct bch_devs_mask devs,
 			   enum bch_degraded_opts degraded, bool print)
 {
 	struct bch_sb_field_members *mi;
-	struct bch_devs_mask offline;
 	unsigned i;
-
-	bitmap_complement(offline.d, devs.d, BCH_SB_MEMBERS_MAX);
 
 	switch (degraded) {
 	case BCH_DEGRADED_none:
@@ -1012,15 +1009,28 @@ bool bch2_have_enough_devs(struct bch_fs *c, struct bch_devs_mask devs,
 			    BCH_MEMBER_STATE(&mi->members[i]) != BCH_MEMBER_STATE_failed &&
 			    !test_bit(i, devs.d)) {
 				mutex_unlock(&c->sb_lock);
+				bch_err(c, "degraded=%s but device %u missing",
+					bch2_degraded_opts[degraded], i);
 				return false;
 			}
 		mutex_unlock(&c->sb_lock);
 		return true;
-	case BCH_DEGRADED_no_splitbrain:
-		if (__bch2_have_enough_devs(c, offline, BCH_FORCE_IF_DEGRADED, false))
+	case BCH_DEGRADED_no_splitbrain: {
+		struct bch_devs_mask all = bch2_all_devs(c);
+		struct bch_devs_mask offline;
+
+		bitmap_complement(offline.d, devs.d, BCH_SB_MEMBERS_MAX);
+		bitmap_and(offline.d, offline.d, all.d, BCH_SB_MEMBERS_MAX);
+
+		if (bitmap_weight(offline.d, BCH_SB_MEMBERS_MAX) &&
+		    __bch2_have_enough_devs(c, offline, BCH_FORCE_IF_DEGRADED, false)) {
+			bch_err(c, "degraded=%s but able to mount with non-present devices",
+				bch2_degraded_opts[degraded]);
 			return false;
+		}
 
 		return __bch2_have_enough_devs(c, devs, BCH_FORCE_IF_DEGRADED, print);
+	}
 	case BCH_DEGRADED_degraded:
 		return __bch2_have_enough_devs(c, devs, BCH_FORCE_IF_DEGRADED, print);
 	case BCH_DEGRADED_data_missing:
