@@ -763,14 +763,6 @@ static void __bch2_write_index(struct bch_write_op *op)
 			goto err;
 	}
 
-	/*
-	 * probably not the ideal place to hook this in, but I don't
-	 * particularly want to plumb io_opts all the way through the btree
-	 * update stack right now
-	 */
-	for_each_keylist_key(keys, k)
-		bch2_rebalance_add_key(c, bkey_i_to_s_c(k), &op->opts);
-
 	if (!bch2_keylist_empty(keys)) {
 		u64 sectors_start = keylist_sectors(keys);
 

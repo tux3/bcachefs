@@ -15,8 +15,6 @@ static inline void rebalance_wakeup(struct bch_fs *c)
 	rcu_read_unlock();
 }
 
-void bch2_rebalance_add_key(struct bch_fs *, struct bkey_s_c,
-			    struct bch_io_opts *);
 void bch2_rebalance_add_work(struct bch_fs *, u64);
 
 void bch2_rebalance_work_to_text(struct printbuf *, struct bch_fs *);

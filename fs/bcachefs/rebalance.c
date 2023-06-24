@@ -68,30 +68,6 @@ static bool rebalance_pred(struct bch_fs *c, void *arg,
 	return data_opts->rewrite_ptrs != 0;
 }
 
-void bch2_rebalance_add_key(struct bch_fs *c,
-			    struct bkey_s_c k,
-			    struct bch_io_opts *io_opts)
-{
-	struct data_update_opts update_opts = { 0 };
-	struct bkey_ptrs_c ptrs;
-	const struct bch_extent_ptr *ptr;
-	unsigned i;
-
-	if (!rebalance_pred(c, NULL, k, io_opts, &update_opts))
-		return;
-
-	i = 0;
-	ptrs = bch2_bkey_ptrs_c(k);
-	bkey_for_each_ptr(ptrs, ptr) {
-		if ((1U << i) && update_opts.rewrite_ptrs)
-			if (atomic64_add_return(k.k->size,
-					&bch_dev_bkey_exists(c, ptr->dev)->rebalance_work) ==
-			    k.k->size)
-				rebalance_wakeup(c);
-		i++;
-	}
-}
-
 void bch2_rebalance_add_work(struct bch_fs *c, u64 sectors)
 {
 	if (atomic64_add_return(sectors, &c->rebalance.work_unknown_dev) ==
