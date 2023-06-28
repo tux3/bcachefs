@@ -1247,17 +1247,18 @@ struct bch_member {
 	__le32			pad;
 	__le64			last_mount;	/* time_t */
 
-	__le64			flags[2];
+	__le64			flags;
+	__le64			seq;
 };
 
-LE64_BITMASK(BCH_MEMBER_STATE,		struct bch_member, flags[0],  0,  4)
+LE64_BITMASK(BCH_MEMBER_STATE,		struct bch_member, flags,  0,  4)
 /* 4-14 unused, was TIER, HAS_(META)DATA, REPLACEMENT */
-LE64_BITMASK(BCH_MEMBER_DISCARD,	struct bch_member, flags[0], 14, 15)
-LE64_BITMASK(BCH_MEMBER_DATA_ALLOWED,	struct bch_member, flags[0], 15, 20)
-LE64_BITMASK(BCH_MEMBER_GROUP,		struct bch_member, flags[0], 20, 28)
-LE64_BITMASK(BCH_MEMBER_DURABILITY,	struct bch_member, flags[0], 28, 30)
+LE64_BITMASK(BCH_MEMBER_DISCARD,	struct bch_member, flags, 14, 15)
+LE64_BITMASK(BCH_MEMBER_DATA_ALLOWED,	struct bch_member, flags, 15, 20)
+LE64_BITMASK(BCH_MEMBER_GROUP,		struct bch_member, flags, 20, 28)
+LE64_BITMASK(BCH_MEMBER_DURABILITY,	struct bch_member, flags, 28, 30)
 LE64_BITMASK(BCH_MEMBER_FREESPACE_INITIALIZED,
-					struct bch_member, flags[0], 30, 31)
+					struct bch_member, flags, 30, 31)
 
 #if 0
 LE64_BITMASK(BCH_MEMBER_NR_READ_ERRORS,	struct bch_member, flags[1], 0,  20);
