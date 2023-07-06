@@ -367,12 +367,13 @@ EXPORT_SYMBOL_GPL(flush_delayed_fput);
 
 static DECLARE_DELAYED_WORK(delayed_fput_work, delayed_fput);
 
-void fput(struct file *file)
+void fput_for_task(struct file *file, struct task_struct *task)
 {
 	if (atomic_long_dec_and_test(&file->f_count)) {
-		struct task_struct *task = current;
+		if (!task && likely(!in_interrupt() && !(current->flags & PF_KTHREAD)))
+			task = current;
 
-		if (likely(!in_interrupt() && !(task->flags & PF_KTHREAD))) {
+		if (task) {
 			init_task_work(&file->f_rcuhead, ____fput);
 			if (!task_work_add(task, &file->f_rcuhead, TWA_RESUME))
 				return;
@@ -386,6 +387,11 @@ void fput(struct file *file)
 		if (llist_add(&file->f_llist, &delayed_fput_list))
 			schedule_delayed_work(&delayed_fput_work, 1);
 	}
+}
+
+void fput(struct file *file)
+{
+	fput_for_task(file, NULL);
 }
 
 /*
@@ -405,6 +411,7 @@ void __fput_sync(struct file *file)
 	}
 }
 
+EXPORT_SYMBOL(fput_for_task);
 EXPORT_SYMBOL(fput);
 EXPORT_SYMBOL(__fput_sync);
 

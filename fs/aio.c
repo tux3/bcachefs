@@ -211,6 +211,7 @@ struct aio_kiocb {
 						 * for cancellation */
 	refcount_t		ki_refcnt;
 
+	struct task_struct	*ki_task;
 	/*
 	 * If the aio_resfd field of the userspace iocb is not zero,
 	 * this is the underlying eventfd context to deliver events to.
@@ -321,7 +322,7 @@ static void put_aio_ring_file(struct kioctx *ctx)
 		ctx->aio_ring_file = NULL;
 		spin_unlock(&i_mapping->private_lock);
 
-		fput(aio_ring_file);
+		__fput_sync(aio_ring_file);
 	}
 }
 
@@ -1068,6 +1069,7 @@ static inline struct aio_kiocb *aio_get_req(struct kioctx *ctx)
 	INIT_LIST_HEAD(&req->ki_list);
 	refcount_set(&req->ki_refcnt, 2);
 	req->ki_eventfd = NULL;
+	req->ki_task = get_task_struct(current);
 	return req;
 }
 
@@ -1104,8 +1106,9 @@ static inline void iocb_destroy(struct aio_kiocb *iocb)
 	if (iocb->ki_eventfd)
 		eventfd_ctx_put(iocb->ki_eventfd);
 	if (iocb->ki_filp)
-		fput(iocb->ki_filp);
+		fput_for_task(iocb->ki_filp, iocb->ki_task);
 	percpu_ref_put(&iocb->ki_ctx->reqs);
+	put_task_struct(iocb->ki_task);
 	kmem_cache_free(kiocb_cachep, iocb);
 }
 

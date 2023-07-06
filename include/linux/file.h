@@ -12,7 +12,9 @@
 #include <linux/errno.h>
 
 struct file;
+struct task_struct;
 
+extern void fput_for_task(struct file *, struct task_struct *);
 extern void fput(struct file *);
 
 struct file_operations;
