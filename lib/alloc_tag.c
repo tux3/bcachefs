@@ -72,6 +72,7 @@ static void alloc_tag_to_text(struct seq_buf *out, struct codetag *ct)
 	seq_buf_printf(out, "%8s ", val);
 	codetag_to_text(out, ct);
 	seq_buf_putc(out, ' ');
+	seq_buf_puts(out, tag->do_alloc);
 	seq_buf_putc(out, '\n');
 }
 

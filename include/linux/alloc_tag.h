@@ -20,6 +20,7 @@
  */
 struct alloc_tag {
 	struct codetag			ct;
+	const char			*do_alloc;
 	u64 __percpu			*bytes_allocated;
 } __aligned(8);
 
@@ -32,9 +33,12 @@ static inline struct alloc_tag *ct_to_alloc_tag(struct codetag *ct)
 	return container_of(ct, struct alloc_tag, ct);
 }
 
-#define DEFINE_ALLOC_TAG(_alloc_tag, _old)				\
+#define DEFINE_ALLOC_TAG(_alloc_tag, _old, _do_alloc)			\
 	static struct alloc_tag _alloc_tag __used __aligned(8)		\
-	__section("alloc_tags") = { .ct = CODE_TAG_INIT };		\
+	__section("alloc_tags") = {					\
+		.ct		= CODE_TAG_INIT,			\
+		.do_alloc	= _do_alloc				\
+	};								\
 	struct alloc_tag * __maybe_unused _old = alloc_tag_save(&_alloc_tag)
 
 DECLARE_STATIC_KEY_MAYBE(CONFIG_MEM_ALLOC_PROFILING_ENABLED_BY_DEFAULT,
@@ -128,7 +132,7 @@ static inline void alloc_tag_add(union codetag_ref *ref, struct alloc_tag *tag, 
 
 #else
 
-#define DEFINE_ALLOC_TAG(_alloc_tag, _old)
+#define DEFINE_ALLOC_TAG(_alloc_tag, _old, _do_alloc)
 static inline void alloc_tag_sub(union codetag_ref *ref, size_t bytes) {}
 static inline void alloc_tag_sub_noalloc(union codetag_ref *ref, size_t bytes) {}
 static inline void alloc_tag_add(union codetag_ref *ref, struct alloc_tag *tag,
@@ -150,7 +154,7 @@ typedef struct mempool_s mempool_t;
 #define alloc_hooks(_do_alloc)						\
 ({									\
 	typeof(_do_alloc) _res;						\
-	DEFINE_ALLOC_TAG(_alloc_tag, _old);				\
+	DEFINE_ALLOC_TAG(_alloc_tag, _old, #_do_alloc);			\
 									\
 	_res = !memory_fault() ? _do_alloc : res_type_to_err(_res);	\
 	alloc_tag_restore(&_alloc_tag, _old);				\
