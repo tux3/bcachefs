@@ -624,15 +624,31 @@ static int get_inodes_all_snapshots(struct btree_trans *trans,
 	return 0;
 }
 
+/*
+ * Find the inode that best matches @snapshot, either from the same snapshot or
+ * the closest ancestor:
+ */
 static struct inode_walker_entry *
 lookup_inode_for_snapshot(struct bch_fs *c, struct inode_walker *w,
 			  u32 snapshot, bool is_whiteout)
 {
+	size_t l = 0, r = w->inodes.nr;
 	struct inode_walker_entry *i;
 
 	snapshot = bch2_snapshot_equiv(c, snapshot);
 
-	darray_for_each(w->inodes, i)
+	while (l + 1 != r) {
+		size_t m = l + (r - l) / 2;
+
+		i = w->inodes.data + m;
+
+		if (i->snapshot < snapshot)
+			l = m;
+		else
+			r = m;
+	}
+
+	for (i = w->inodes.data + l; i < w->inodes.data + w->inodes.nr; i++)
 		if (bch2_snapshot_is_ancestor(c, snapshot, i->snapshot))
 			goto found;
 
