@@ -88,6 +88,20 @@ static int bch2_snapshot_tree_create(struct btree_trans *trans,
 
 /* Snapshot nodes: */
 
+static bool bch2_snapshot_is_ancestor_early(struct bch_fs *c, u32 id, u32 ancestor)
+{
+	struct snapshot_table *t;
+
+	rcu_read_lock();
+	t = rcu_dereference(c->snapshots);
+
+	while (id && id < ancestor)
+		id = __snapshot_t(t, id)->parent;
+	rcu_read_unlock();
+
+	return id == ancestor;
+}
+
 static inline u32 get_ancestor_below(struct snapshot_table *t, u32 id, u32 ancestor)
 {
 	const struct snapshot_t *s = __snapshot_t(t, id);
@@ -114,26 +128,17 @@ bool __bch2_snapshot_is_ancestor(struct bch_fs *c, u32 id, u32 ancestor)
 	while (id && id < ancestor - IS_ANCESTOR_BITMAP)
 		id = get_ancestor_below(t, id, ancestor);
 
-	ret = id && id < ancestor
-		? test_bit(ancestor - id - 1, __snapshot_t(t, id)->is_ancestor)
-		: id == ancestor;
+	if (id && id < ancestor) {
+		ret = test_bit(ancestor - id - 1, __snapshot_t(t, id)->is_ancestor);
+
+		EBUG_ON(ret != bch2_snapshot_is_ancestor_early(c, id, ancestor));
+	} else {
+		ret = id == ancestor;
+	}
+
 	rcu_read_unlock();
 
 	return ret;
-}
-
-static bool bch2_snapshot_is_ancestor_early(struct bch_fs *c, u32 id, u32 ancestor)
-{
-	struct snapshot_table *t;
-
-	rcu_read_lock();
-	t = rcu_dereference(c->snapshots);
-
-	while (id && id < ancestor)
-		id = __snapshot_t(t, id)->parent;
-	rcu_read_unlock();
-
-	return id == ancestor;
 }
 
 static noinline struct snapshot_t *__snapshot_t_mut(struct bch_fs *c, u32 id)
