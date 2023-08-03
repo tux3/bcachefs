@@ -813,7 +813,8 @@ struct bch_inode_generation {
 	x(bi_dir_offset,		64)	\
 	x(bi_subvol,			32)	\
 	x(bi_parent_subvol,		32)	\
-	x(bi_nocow,			8)
+	x(bi_nocow,			8)	\
+	x(bi_depth,			32)
 
 /* subset of BCH_INODE_FIELDS */
 #define BCH_INODE_OPTS()			\
@@ -1634,7 +1635,9 @@ struct bch_sb_field_journal_seq_blacklist {
 	x(snapshot_skiplists,		BCH_VERSION(1,  1),		\
 	  BIT_ULL(BCH_RECOVERY_PASS_check_snapshots))			\
 	x(deleted_inodes,		BCH_VERSION(1,  2),		\
-	  BIT_ULL(BCH_RECOVERY_PASS_check_inodes))
+	  BIT_ULL(BCH_RECOVERY_PASS_check_inodes))			\
+	x(inode_depth,			BCH_VERSION(1,  3),		\
+	  0)
 
 enum bcachefs_metadata_version {
 	bcachefs_metadata_version_min = 9,
