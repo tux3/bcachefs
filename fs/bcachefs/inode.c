@@ -1027,7 +1027,7 @@ static int may_delete_deleted_inode(struct btree_trans *trans, struct bpos pos)
 	int ret;
 
 	if (bch2_snapshot_is_internal_node(c, pos.snapshot))
-		return 0;
+		goto delete;
 
 	if (!fsck_err_on(c->sb.clean, c,
 			 "filesystem marked as clean but have deleted inode %llu:%u",

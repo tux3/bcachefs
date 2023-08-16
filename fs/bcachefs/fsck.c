@@ -842,36 +842,44 @@ static int check_inode(struct btree_trans *trans,
 	struct bch_inode_unpacked u;
 	bool do_update = false;
 	int ret;
-
+#if 1
 	ret = check_key_has_snapshot(trans, iter, k);
 	if (ret < 0)
 		goto err;
-	if (ret)
+	if (ret) {
+		BUG();
 		return 0;
+	}
 
 	ret = snapshots_seen_update(c, s, iter->btree_id, k.k->p);
-	if (ret)
+	if (ret) {
+		BUG();
 		goto err;
+	}
 
 	/*
 	 * if snapshot id isn't a leaf node, skip it - deletion in
 	 * particular is not atomic, so on the internal snapshot nodes
 	 * we can see inodes marked for deletion after a clean shutdown
 	 */
-	if (bch2_snapshot_is_internal_node(c, k.k->p.snapshot))
+	if (bch2_snapshot_is_internal_node(c, k.k->p.snapshot)) {
+		BUG();
 		return 0;
-
+	}
+#endif
 	if (!bkey_is_inode(k.k))
 		return 0;
 
 	BUG_ON(bch2_inode_unpack(k, &u));
 
+	BUG_ON(u.bi_flags & BCH_INODE_UNLINKED);
+#if 0
 	if (!full &&
 	    !(u.bi_flags & (BCH_INODE_I_SIZE_DIRTY|
 			    BCH_INODE_I_SECTORS_DIRTY|
 			    BCH_INODE_UNLINKED)))
 		return 0;
-
+#endif
 	if (prev->bi_inum != u.bi_inum)
 		*prev = u;
 
@@ -896,6 +904,9 @@ static int check_inode(struct btree_trans *trans,
 		return ret;
 	}
 
+	/*
+	 * we still need scan after unclean shutdown, 1.2 release is bogus:
+	 */
 	if (u.bi_flags & BCH_INODE_I_SIZE_DIRTY &&
 	    (!c->sb.clean ||
 	     fsck_err(c, "filesystem marked clean, but inode %llu has i_size dirty",
@@ -930,6 +941,9 @@ static int check_inode(struct btree_trans *trans,
 		do_update = true;
 	}
 
+	/*
+	 * not a thing anymore, we can delete this:
+	 */
 	if (u.bi_flags & BCH_INODE_I_SECTORS_DIRTY &&
 	    (!c->sb.clean ||
 	     fsck_err(c, "filesystem marked clean, but inode %llu has i_sectors dirty",
@@ -951,6 +965,7 @@ static int check_inode(struct btree_trans *trans,
 		do_update = true;
 	}
 
+	/* this can be deleted */
 	if (u.bi_flags & BCH_INODE_BACKPTR_UNTRUSTED) {
 		u.bi_dir = 0;
 		u.bi_dir_offset = 0;
@@ -971,7 +986,6 @@ fsck_err:
 	return ret;
 }
 
-noinline_for_stack
 int bch2_check_inodes(struct bch_fs *c)
 {
 	bool full = c->opts.fsck;
@@ -980,10 +994,19 @@ int bch2_check_inodes(struct bch_fs *c)
 	struct bch_inode_unpacked prev = { 0 };
 	struct snapshots_seen s;
 	struct bkey_s_c k;
+	struct bpos prev_inode = POS_MIN;
 	int ret;
 
 	snapshots_seen_init(&s);
 	bch2_trans_init(&trans, c, BTREE_ITER_MAX, 0);
+
+	for_each_btree_key(&trans, iter, BTREE_ID_inodes,
+			POS_MIN,
+			BTREE_ITER_PREFETCH|BTREE_ITER_ALL_SNAPSHOTS, k, ret) {
+		BUG_ON(bkey_eq(k.k->p, prev_inode));
+		prev_inode = k.k->p;
+	}
+	bch2_trans_iter_exit(&trans, &iter);
 
 	ret = for_each_btree_key_commit(&trans, iter, BTREE_ID_inodes,
 			POS_MIN,
@@ -1646,6 +1669,10 @@ static int check_dirent(struct btree_trans *trans, struct btree_iter *iter,
 	if (ret)
 		goto err;
 
+	/*
+	 * XXX: we could check for and clean up whitouts that are no longer
+	 * needed
+	 */
 	if (k.k->type == KEY_TYPE_whiteout)
 		goto out;
 
@@ -1810,6 +1837,9 @@ int bch2_check_dirents(struct bch_fs *c)
 			NULL, NULL,
 			BTREE_INSERT_LAZY_RW|BTREE_INSERT_NOFAIL,
 		check_dirent(&trans, &iter, k, &hash_info, &dir, &target, &s));
+
+	/* XXX do this again here */
+	//ret = check_subdir_count(trans, dir);
 
 	bch2_trans_exit(&trans);
 	snapshots_seen_exit(&s);
@@ -2021,6 +2051,10 @@ static int check_path(struct btree_trans *trans,
 				break;
 		}
 
+		/* XXX check for missing backpointer explicitly */
+		if (!inode->bi_dir && !inode->bi_dir_offset)
+			goto unreachable;
+
 		ret = lockrestart_do(trans,
 			PTR_ERR_OR_ZERO((d = dirent_get_by_pos(trans, &dirent_iter,
 					  SPOS(inode->bi_dir, inode->bi_dir_offset,
@@ -2029,11 +2063,15 @@ static int check_path(struct btree_trans *trans,
 			break;
 
 		if (!ret && !dirent_points_to_inode(d, inode)) {
+			/* should never happen, because check_inodes() already
+			 * checked for this */
+			BUG();
 			bch2_trans_iter_exit(trans, &dirent_iter);
 			ret = -BCH_ERR_ENOENT_dirent_doesnt_match_inode;
 		}
 
 		if (bch2_err_matches(ret, ENOENT)) {
+unreachable:
 			if (fsck_err(c,  "unreachable inode %llu:%u, type %s nlink %u backptr %llu:%llu",
 				     inode->bi_inum, snapshot,
 				     bch2_d_type_str(inode_d_type(inode)),
@@ -2125,8 +2163,10 @@ int bch2_check_directory_structure(struct bch_fs *c)
 			break;
 		}
 
-		if (u.bi_flags & BCH_INODE_UNLINKED)
-			continue;
+		/*
+		 * we shouldn't be seeing unlinked inodes at this point, right?
+		 */
+		BUG_ON(u.bi_flags & BCH_INODE_UNLINKED);
 
 		ret = check_path(&trans, &path, &u, iter.pos.snapshot);
 		if (ret)
